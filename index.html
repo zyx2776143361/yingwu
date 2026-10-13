@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>星月夜 — 用手势画梵高的天空</title>
+  <link rel="stylesheet" href="style.css">
+
+  <!-- p5.js + p5.sound：先用国内镜像 npmmirror，打不开就自动换成 jsDelivr -->
+  <script src="https://registry.npmmirror.com/p5/1.11.10/files/lib/p5.min.js"></script>
+  <script>window.p5 || document.write('<script src="https://cdn.jsdelivr.net/npm/p5@1.11.10/lib/p5.min.js"><\/script>')</script>
+  <script src="https://registry.npmmirror.com/p5/1.11.10/files/lib/addons/p5.sound.min.js"></script>
+  <script>(window.p5 && window.p5.SoundFile) || document.write('<script src="https://cdn.jsdelivr.net/npm/p5@1.11.10/lib/addons/p5.sound.min.js"><\/script>')</script>
+  <!-- MediaPipe 手势模型在 sketch.js 里面加载 -->
+  <script src="sketch.js"></script>
+</head>
+<body>
+  <div id="intro">
+    <div class="card">
+      <h1>星月夜</h1>
+      <p class="sub">致敬 文森特·梵高《星月夜》（1889）</p>
+      <ul>
+        <li>笔触会自己沿着风流动，绕着星星打转</li>
+        <li>☝️ <b>食指向上</b> → 在指尖点亮一颗星星</li>
+        <li>👍 <b>拇指向上</b> → 一颗大星星</li>
+        <li>✊ <b>握拳</b> → 把月亮移到你的手上</li>
+        <li>🖐 <b>张开手掌</b> → 起风，笔触流得更快</li>
+        <li>✌️ <b>剪刀手</b> → 一张新画布</li>
+        <li>按键：<kbd>C</kbd> 新画布 · <kbd>S</kbd> 保存 · <kbd>V</kbd> 摄像头 · <kbd>I</kbd> 手势信息</li>
+      </ul>
+      <button id="start">开始作画</button>
+    </div>
+  </div>
+  <div id="status"></div>
+</body>
+</html>
