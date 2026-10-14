@@ -1,0 +1,91 @@
+/* 全屏画布，没有滚动条 */
+html, body {
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  background: #14215e;
+  color: #f6e9b8;
+  font-family: Georgia, "Songti SC", "SimSun", "PingFang SC", "Microsoft YaHei", serif;
+}
+
+canvas {
+  display: block;
+}
+
+/* 开始界面：浏览器只允许在点击之后打开摄像头和声音 */
+#intro {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #14215e;
+  z-index: 10;
+  padding: 16px;
+  overflow-y: auto;
+}
+
+.card {
+  max-width: 580px;
+  padding: 28px 32px;
+  background: rgba(20, 33, 94, 0.88);
+  border: 2px solid #f2d34f;
+  border-radius: 10px;
+  text-align: center;
+}
+
+.card h1 {
+  font-size: clamp(2.6rem, 10vw, 4.8rem);
+  margin: 0;
+  letter-spacing: 0.12em;
+  font-weight: normal;
+}
+
+.sub {
+  margin: 4px 0 20px;
+  opacity: 0.8;
+}
+
+.card ul {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 24px;
+  line-height: 1.9;
+  text-align: left;
+}
+
+kbd {
+  border: 1px solid currentColor;
+  border-radius: 4px;
+  padding: 0 6px;
+  font-size: 0.85em;
+}
+
+#start {
+  font-family: inherit;
+  font-size: 1.2rem;
+  padding: 12px 36px;
+  border: none;
+  border-radius: 6px;
+  background: #f2d34f;
+  color: #14215e;
+  cursor: pointer;
+  letter-spacing: 0.15em;
+}
+
+#start:hover {
+  filter: brightness(1.15);
+}
+
+/* 角落里的状态提示 */
+#status {
+  position: fixed;
+  left: 16px;
+  bottom: 12px;
+  font-size: 0.9rem;
+  padding: 2px 8px;
+  border-radius: 4px;
+  background: rgba(20, 33, 94, 0.88);
+  pointer-events: none;
+  max-width: calc(100vw - 48px);
+}
