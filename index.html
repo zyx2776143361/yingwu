@@ -2,10 +2,35 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Document</title>
+  <title>Bird Maze</title>
+  <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  
+  <div id="app">
+    <header class="top-bar">
+      <h1 class="logo">BIRD MAZE</h1>
+      <div class="hud">
+        <div class="hud-item hud-score">Score&nbsp;<span id="score">0</span></div>
+        <div class="hud-item hud-lives">Lives&nbsp;<span id="lives">1</span></div>
+      </div>
+    </header>
+
+    <main class="game-wrap">
+      <div id="gameArea" class="game-area">
+        <canvas id="gameCanvas" width="880" height="600"></canvas>
+
+        <div id="menuScreen" class="overlay">
+          <div class="card">
+            <div class="card-emoji">🐦</div>
+            <h2>BIRD MAZE</h2>
+            <p class="sub">Control the bird with your fist.<br>Eat fruit by opening and closing your mouth.</p>
+            <button id="startBtn" class="btn-primary">▶ Start Game</button>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <script src="script.js"></script>
 </body>
 </html>

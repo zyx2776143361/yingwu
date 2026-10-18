@@ -1,0 +1,22 @@
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: "Baloo 2", "Microsoft YaHei", sans-serif;
+  background: linear-gradient(160deg, #1b4332, #2d6a4f);
+  min-height: 100vh; color: #2d3a2e;
+}
+#app { max-width: 960px; margin: 0 auto; padding: 16px; }
+.top-bar { display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; }
+.logo { color: #fff; font-size: 28px; font-weight: 800; }
+.hud { display: flex; gap: 10px; }
+.hud-item { background: rgba(255,255,255,0.9); border-radius: 999px; padding: 8px 18px; font-weight: 700; }
+.hud-score span { color: #e8751a; }
+.hud-lives span { color: #2f9e44; }
+.game-area { position: relative; background: #eaf7e2; border-radius: 18px; overflow: hidden; box-shadow: 0 10px 30px rgba(0,0,0,0.3); }
+#gameCanvas { display: block; margin: 0 auto; }
+.overlay { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,0.35); }
+.card { background: #fdf6e3; border-radius: 24px; padding: 36px 48px; text-align: center; box-shadow: 0 12px 40px rgba(0,0,0,0.35); }
+.card-emoji { font-size: 56px; }
+.card h2 { color: #2d6a4f; font-size: 40px; margin: 8px 0; }
+.sub { color: #6b7a6b; margin: 10px 0 22px; line-height: 1.6; }
+.btn-primary { font-family: inherit; font-size: 20px; font-weight: 700; color: #fff; background: #f59f00; border: none; border-radius: 999px; padding: 14px 34px; cursor: pointer; box-shadow: 0 4px 0 #c67d00; }
+.btn-primary:active { transform: translateY(2px); box-shadow: 0 2px 0 #c67d00; }
