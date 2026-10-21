@@ -21,3 +21,4 @@ body {
 .btn-primary { font-family: inherit; font-size: 20px; font-weight: 700; color: #fff; background: #f59f00; border: none; border-radius: 999px; padding: 14px 34px; cursor: pointer; box-shadow: 0 4px 0 #c67d00; }
 .btn-primary:active { transform: translateY(2px); box-shadow: 0 2px 0 #c67d00; }
 .hidden { display: none; }
+.final-score { color: #e8751a; font-size: 26px; font-weight: 800; margin-bottom: 20px; }
