@@ -4,13 +4,12 @@
    核心思路：
    1. 摄像头视频 → MediaPipe Gesture Recognizer（老师提供的
       gesture_recognizer.task）识别「握拳 / Closed_Fist」；
-   2. 握拳时，用 21 个手部关键点计算拳头中心，与上一帧比较得到
-      手部移动方向 → 平滑地驱动小鸟移动（带死区 + 平滑，防抖动）；
+   2. 握拳后跟随手掌的实际移动方向和速度，手停则停止；
+      松拳后可以自由调整手的位置，再握拳继续移动；
    3. MediaPipe Face Landmarker 识别人脸关键点，用上下嘴唇距离判断
       「张嘴 / 闭嘴」；完成一次 张嘴 → 闭嘴 且小鸟离水果足够近，
       才算吃到水果；
-   4. 迷宫墙壁碰撞：计算下一帧位置 → 检测圆形碰撞范围是否压到墙 →
-      撞墙立即 Game Over；
+   4. 简单模式：碰墙挡住移动，可沿墙滑动；5 次生命，持续贴墙不会重复扣命。
    5. 到达出口 = 胜利。
    全程在浏览器本地处理，摄像头画面不上传任何服务器。
    ===================================================================== */
@@ -24,17 +23,20 @@ const CONFIG = {
   MIRROR_VIDEO: true,        // 摄像头画面按「镜子」方式显示；左右控制方向会自动适配
 
   // ---- 手部移动控制 ----
-  HAND_DEAD_ZONE: 0.004,     // 手部位移死区（归一化坐标/识别帧）：小于该值的抖动忽略
-  HAND_SENSITIVITY: 8000,    // 手部位移 → 小鸟目标速度（px/s）的换算系数
-  BIRD_MAX_SPEED: 175,       // 小鸟最大速度（像素/秒）
+  HAND_DEAD_ZONE: 0.001,    // 相邻识别帧的小幅抖动过滤
+  HAND_MOVEMENT_GAIN: 1100, // 手掌归一化位移 → 游戏像素，按识别间隔换算速度
+  BIRD_MAX_SPEED: 120,       // 手势最大速度（像素/秒）
+  MANUAL_SPEED: 100,         // 提高键盘 / 触控速度，避免移动迟缓
   VELOCITY_SMOOTHING: 0.30,  // 速度平滑系数（0~1，越小越平滑）
   HAND_SMOOTHING: 0.55,      // 拳头中心平滑系数（越小越抗抖，但反应越慢）
 
   // ---- 小鸟 ----
-  BIRD_RADIUS: 12,           // 小鸟碰撞半径（像素）
+  BIRD_RADIUS: 8,            // 更小的碰撞范围，转弯更宽容
+  START_LIVES: 5,            // 撞墙容错次数
+  WALL_GRACE_SECONDS: 2,     // 撞墙后保护时间
 
   // ---- 水果 ----
-  EAT_DISTANCE: 36,          // 小鸟中心与水果中心的「有效吃水果距离」（像素）
+  EAT_DISTANCE: 50,          // 放宽吃水果距离
 
   // ---- 嘴部识别 ----
   MOUTH_OPEN_THRESHOLD: 0.055,   // 嘴高/脸高 比例超过该值 → 判定张嘴
@@ -58,7 +60,7 @@ const CONFIG = {
 
 /* =====================================================================
    2. 迷宫数据
-   外圈墙与迷宫外区域均为边界，撞墙即结束。
+   外圈墙与迷宫外区域均为边界；碰墙停住，生命耗尽才结束。
    起点 S(1,1) → 出口 E(13,20)，8 个水果位于可行走格子。
    ===================================================================== */
 const MAZE_MAP = [
@@ -176,7 +178,9 @@ const state = {
   waitStart: 0,
 
   score: 0,
-  lives: 1,
+  lives: CONFIG.START_LIVES,
+  wallGrace: 0,
+  wallHitPosition: null,
   fruits: [],
   birdDead: false,
   chewTimer: 0,
@@ -187,12 +191,13 @@ const state = {
 /* 小鸟对象 */
 const bird = { x: 0, y: 0, vx: 0, vy: 0 };
 
-/* 手部运动追踪（跨帧比较用） */
+/* 手部运动追踪：比较相邻识别帧的真实位移。 */
 const hand = {
   baselined: false, // 是否已经建立基准（握拳刚出现的第一帧只建基准，不产生位移）
   sx: 0, sy: 0,     // 平滑后的拳头中心（归一化 0~1）
-  px: 0, py: 0,     // 上一帧的拳头中心
-  dxRaw: 0, dyRaw: 0, // 原始位移（调试用）
+  px: 0, py: 0,     // 上一次识别到的拳头中心
+  sampleTime: 0,    // 上一次位置采样时间，避免识别帧率改变移动手感
+  dxRaw: 0, dyRaw: 0, // 相邻帧位移（调试用）
   tvx: 0, tvy: 0,   // 当前目标速度（px/s），新识别帧刷新，渲染帧复用
 };
 
@@ -240,8 +245,8 @@ function updateManualMotion() {
   if (!length) { stopControl(); return; }
   state.controlActive = true;
   // 触屏上的通道较窄，较低速度便于准确转弯，斜向保持同样速度。
-  hand.tvx = x / length * 85;
-  hand.tvy = y / length * 85;
+  hand.tvx = x / length * CONFIG.MANUAL_SPEED;
+  hand.tvy = y / length * CONFIG.MANUAL_SPEED;
 }
 
 /** 清除过期的控制输入，避免丢失识别后继续移动。 */
@@ -674,7 +679,7 @@ function applyDeadZone(v, zone) {
   return a < zone ? 0 : (a - zone) * Math.sign(v);
 }
 
-/** 根据拳头位置变化计算目标速度（仅在有新识别数据时刷新） */
+/** 跟随拳头的实际移动；手保持不动时清零速度，不会持续飞行。 */
 function updateHandMotion() {
   if (!state.handSeen || !state.isFist) {
     // 没有手 / 没有握拳 → 不产生移动，并且下次握拳时重新建立基准
@@ -687,25 +692,26 @@ function updateHandMotion() {
   state.handUpdated = false;
 
   const raw = palmCenter(state.handLandmarks);
+  const now = performance.now();
 
   // 握拳刚出现的第 1 帧：只建立基准，不产生位移（避免瞬移）
   if (!hand.baselined) {
     hand.sx = hand.px = raw.x;
     hand.sy = hand.py = raw.y;
+    hand.sampleTime = now;
     hand.baselined = true;
     state.controlActive = true;
     return;
   }
 
-  // 平滑拳头中心（抗抖动）
-  hand.sx += (raw.x - hand.sx) * CONFIG.HAND_SMOOTHING;
-  hand.sy += (raw.y - hand.sy) * CONFIG.HAND_SMOOTHING;
-
-  // 与上一帧比较 → 位移（归一化坐标 / 识别帧）
-  const dx = hand.sx - hand.px;
-  const dy = hand.sy - hand.py;
+  const dt = clamp((now - hand.sampleTime) / 1000, 1 / 120, 0.1);
+  const dx = raw.x - hand.px;
+  const dy = raw.y - hand.py;
   hand.dxRaw = dx;
   hand.dyRaw = dy;
+  hand.px = hand.sx = raw.x;
+  hand.py = hand.sy = raw.y;
+  hand.sampleTime = now;
 
   // 死区：手轻微抖动时忽略
   const ddx = applyDeadZone(dx, CONFIG.HAND_DEAD_ZONE);
@@ -714,22 +720,29 @@ function updateHandMotion() {
   // 镜像显示时，屏幕上的左右与摄像头原画面的左右相反，所以水平方向取反
   const mirrorSign = CONFIG.MIRROR_VIDEO ? -1 : 1;
 
-  // 换算成目标速度（px/s）：位移 × 灵敏度系数，并限速
-  const maxS = CONFIG.BIRD_MAX_SPEED;
-  hand.tvx = clamp(ddx * CONFIG.HAND_SENSITIVITY * mirrorSign, -maxS, maxS);
-  hand.tvy = clamp(ddy * CONFIG.HAND_SENSITIVITY, -maxS, maxS);
-
-  hand.px = hand.sx;
-  hand.py = hand.sy;
+  let vx = ddx * CONFIG.HAND_MOVEMENT_GAIN / dt * mirrorSign;
+  let vy = ddy * CONFIG.HAND_MOVEMENT_GAIN / dt;
+  const scale = Math.min(1, CONFIG.BIRD_MAX_SPEED / (Math.hypot(vx, vy) || 1));
+  vx *= scale;
+  vy *= scale;
+  // 移动时平滑速度；某方向已经停手时立即清零，避免平滑产生拖尾。
+  hand.tvx = ddx === 0 ? 0 : hand.tvx + (vx - hand.tvx) * CONFIG.HAND_SMOOTHING;
+  hand.tvy = ddy === 0 ? 0 : hand.tvy + (vy - hand.tvy) * CONFIG.HAND_SMOOTHING;
   state.controlActive = true;
 }
 
 /** 更新小鸟位置（含墙壁碰撞检测） */
 function updateBirdMovement(dt) {
+  state.wallGrace = Math.max(0, state.wallGrace - dt);
   if (state.inputMode === "manual") updateManualMotion();
   else updateHandMotion();
 
   if (state.controlActive) {
+    if (state.inputMode === "gesture") {
+      if (hand.tvx === 0) bird.vx = 0;
+      if (hand.tvy === 0) bird.vy = 0;
+    }
+    if (hand.tvx === 0 && hand.tvy === 0) bird.vx = bird.vy = 0;
     // 有目标速度 → 向目标速度平滑靠拢（每个渲染帧都执行，直到下一次识别刷新）
     const smoothing = 1 - Math.pow(1 - CONFIG.VELOCITY_SMOOTHING, dt * 60);
     bird.vx += (hand.tvx - bird.vx) * smoothing;
@@ -743,22 +756,39 @@ function updateBirdMovement(dt) {
     if (Math.abs(bird.vy) < 0.5) bird.vy = 0;
   }
 
-  // 1. 计算下一帧位置
+  // 分轴移动：被墙挡住的方向停止，另一方向仍可沿墙移动。
   const nx = bird.x + bird.vx * dt;
-  const ny = bird.y + bird.vy * dt;
-
-  // 2. 检测小鸟碰撞范围是否与墙壁重叠
-  if (checkWallCollision(nx, ny)) {
-    // 3. 撞墙 → 立即游戏结束（规则见需求第 6 条）
-    gameOver();
-    return;
+  let blocked = false;
+  if (checkWallCollision(nx, bird.y)) {
+    bird.vx = 0;
+    blocked = true;
+  } else {
+    bird.x = nx;
   }
+  const ny = bird.y + bird.vy * dt;
+  if (checkWallCollision(bird.x, ny)) {
+    bird.vy = 0;
+    blocked = true;
+  } else {
+    bird.y = ny;
+  }
+  // 停止贴墙并离开上次碰墙点至少半格后，才计算下一次碰墙。
+  if (!blocked && state.wallHitPosition && Math.hypot(
+    bird.x - state.wallHitPosition.x, bird.y - state.wallHitPosition.y
+  ) > CELL / 2) state.wallHitPosition = null;
 
-  // 4. 没有碰撞 → 允许移动
-  bird.x = nx;
-  bird.y = ny;
-  bird.x = clamp(bird.x, 20, COLS * CELL - 20);
-  bird.y = clamp(bird.y, 20, ROWS * CELL - 20);
+  if (blocked && !state.wallHitPosition && state.wallGrace === 0) {
+    state.wallHitPosition = { x: bird.x, y: bird.y };
+    state.wallGrace = CONFIG.WALL_GRACE_SECONDS;
+    state.lives = Math.max(0, state.lives - 1);
+    $("lives").textContent = state.lives;
+    if (state.lives === 0) {
+      gameOver();
+      return;
+    }
+    spawnFloatText(bird.x, bird.y - 22, "慢慢来 ♥ " + state.lives, "#f28c1e");
+    tone(300, 0.08, "sine", 0.08);
+  }
 }
 
 /** 圆与墙格矩形的最近点检测，避免包围盒在墙角误判。 */
@@ -839,7 +869,9 @@ function resetGame() {
   bird.vy = 0;
 
   state.score = 0;
-  state.lives = 1;
+  state.lives = CONFIG.START_LIVES;
+  state.wallGrace = 0;
+  state.wallHitPosition = null;
   $("lives").textContent = state.lives;
   state.birdDead = false;
   state.chewTimer = 0;
@@ -1534,6 +1566,9 @@ function updateStatusUI() {
     button.hidden = state.hasActiveGame;
   });
   const isManual = state.inputMode === "manual";
+  $("controlHint").textContent = isManual
+    ? "按住方向键 / WASD 或屏幕方向按钮移动，松开停止；空格或点击按钮吃水果。"
+    : "握拳后移动手掌，鹦鹉跟随移动；手停或松拳就停。松拳后可调整手的位置，再握拳继续。";
   for (const chip of [chipHand, chipGesture, chipMouth]) chip.hidden = isManual;
   $("toggleCameraBtn").hidden = isManual;
   chipCam.textContent = "Camera: " + (isManual ? "未启用" : state.camStatus);
@@ -1552,7 +1587,7 @@ function updateStatusUI() {
   camStatusText.textContent = "Camera: " + state.camStatus;
 
   debugLine.textContent =
-    `MAR:${state.mar.toFixed(3)}  HandΔ:(${hand.dxRaw.toFixed(3)},${hand.dyRaw.toFixed(3)})` +
+    `MAR:${state.mar.toFixed(3)}  HandDelta:(${hand.dxRaw.toFixed(3)},${hand.dyRaw.toFixed(3)})` +
     `  Bird:(${Math.round(bird.x)},${Math.round(bird.y)})  Speed:${Math.round(Math.hypot(bird.vx, bird.vy))}px/s` +
     `  FPS:${fps}  State:${state.mode}`;
 }

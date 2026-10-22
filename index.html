@@ -60,7 +60,7 @@
         <button id="switchModeBtn" class="btn-ghost" data-switch-mode title="切换操作方式，保留当前游戏进度">🎮 切换模式</button>
         <button id="toggleCameraBtn" class="btn-ghost" aria-controls="cameraPanel" aria-expanded="true" title="显示 / 隐藏摄像头画面">📷 摄像头</button>
         <div class="hud-item hud-score">Score&nbsp;<span id="score">0</span></div>
-        <div class="hud-item hud-lives">Lives&nbsp;<span id="lives">1</span></div>
+        <div class="hud-item hud-lives">♥&nbsp;<span id="lives">5</span></div>
       </div>
     </header>
 
@@ -75,21 +75,21 @@
           <div class="card">
             <div class="card-emoji">🐦</div>
             <h2>BIRD MAZE</h2>
-            <p class="sub">Control the bird with your fist.<br>Eat fruit by opening and closing your mouth.</p>
+            <p class="sub">🌱 简单模式 · 5 次生命 · 手掌跟随<br>碰墙会停住，持续贴墙不会连续扣命。</p>
 
             <div class="gesture-guide">
               <div class="guide-item">
                 <img class="guide-img" src="https://res.cloudinary.com/kjd0jh3m/image/upload/v1792315521/fist.webp" alt="握拳姿势" onerror="this.style.display='none'">
                 <div>
                   <b>握拳 ✊</b>
-                  <small>拳头正对摄像头，五指收拢<br>握拳后移动手掌 → 小鸟跟着移动</small>
+                  <small>握拳后移动手掌，鹦鹉跟着移动<br>手停或松拳就停；松拳可调整手的位置</small>
                 </div>
               </div>
               <div class="guide-item">
                 <img class="guide-img" src="https://res.cloudinary.com/kjd0jh3m/image/upload/v1792315521/mouth_open.webp" alt="张嘴姿势" onerror="this.style.display='none'">
                 <div>
                   <b>张嘴 → 闭嘴 😮→😐</b>
-                  <small>靠近水果后张嘴再闭嘴 = 吃水果</small>
+                  <small>靠近水果后张嘴再闭嘴 = 吃水果<br>已放宽距离，不用对准水果中心</small>
                 </div>
               </div>
             </div>
@@ -131,7 +131,7 @@
           <div class="card">
             <div class="card-emoji">💥</div>
             <h2>GAME OVER</h2>
-            <p class="sub">The bird hit the wall!</p>
+            <p class="sub">生命已用完，再试一次，慢慢移动就好！</p>
             <p class="final-score">Score: <span id="overScore">0</span></p>
             <button id="retryBtn" class="btn-primary">🔄 Play Again</button>
             <button class="btn-ghost" data-switch-mode>切换模式</button>
@@ -163,7 +163,7 @@
           <small>按住方向移动，松开即停<br>键盘：方向键 / WASD · 空格吃水果</small>
         </div>
       </div>
-      <p class="device-tip">手机 / 平板横屏可放大迷宫；手势模式请固定设备，让脸和手同时入镜。</p>
+      <p id="controlHint" class="device-tip">握拳后移动手掌，鹦鹉跟随移动；手停或松拳就停。</p>
 
       <!-- ===================== 状态栏 ===================== -->
       <div class="status-bar">
