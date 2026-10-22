@@ -23,12 +23,12 @@ const CONFIG = {
   MIRROR_VIDEO: true,        // 摄像头画面按「镜子」方式显示；左右控制方向会自动适配
 
   // ---- 手部移动控制 ----
-  HAND_DEAD_ZONE: 0.001,    // 相邻识别帧的小幅抖动过滤
-  HAND_MOVEMENT_GAIN: 1100, // 手掌归一化位移 → 游戏像素，按识别间隔换算速度
-  BIRD_MAX_SPEED: 120,       // 手势最大速度（像素/秒）
+  HAND_DEAD_ZONE: 0.0018,   // 30fps 下的抖动过滤阈值，运行时随采样间隔调整
+  HAND_MOVEMENT_GAIN: 600,  // 降低跟随倍率，小幅挪手更适合精细调整
+  BIRD_MAX_SPEED: 80,       // 降低手势最高速度，减少突然冲向墙壁
   MANUAL_SPEED: 100,         // 提高键盘 / 触控速度，避免移动迟缓
   VELOCITY_SMOOTHING: 0.30,  // 速度平滑系数（0~1，越小越平滑）
-  HAND_SMOOTHING: 0.55,      // 拳头中心平滑系数（越小越抗抖，但反应越慢）
+  HAND_SMOOTHING: 0.40,      // 手势目标速度平滑；停手仍立即归零
 
   // ---- 小鸟 ----
   BIRD_RADIUS: 8,            // 更小的碰撞范围，转弯更宽容
@@ -714,8 +714,9 @@ function updateHandMotion() {
   hand.sampleTime = now;
 
   // 死区：手轻微抖动时忽略
-  const ddx = applyDeadZone(dx, CONFIG.HAND_DEAD_ZONE);
-  const ddy = applyDeadZone(dy, CONFIG.HAND_DEAD_ZONE);
+  const deadZone = CONFIG.HAND_DEAD_ZONE * dt * 30;
+  const ddx = applyDeadZone(dx, deadZone);
+  const ddy = applyDeadZone(dy, deadZone);
 
   // 镜像显示时，屏幕上的左右与摄像头原画面的左右相反，所以水平方向取反
   const mirrorSign = CONFIG.MIRROR_VIDEO ? -1 : 1;
