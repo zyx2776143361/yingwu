@@ -148,6 +148,7 @@ const video = $("camVideo");
    5. 全局状态
    ===================================================================== */
 const state = {
+  inputMode: "gesture",   // gesture / manual
   mode: "MENU",          // MENU / LOADING / WAITING / PLAYING / GAME_OVER / WIN
   cameraOk: false,
   camStatus: "--",
@@ -200,6 +201,41 @@ let gestureRecognizer = null;
 let faceLandmarker = null;
 let lastVideoTime = -1;
 let lastTrackingAt = 0;
+const manualInput = { pointers: new Map(), keys: new Set() };
+const keyDirections = {
+  ArrowUp: "up", KeyW: "up", ArrowDown: "down", KeyS: "down",
+  ArrowLeft: "left", KeyA: "left", ArrowRight: "right", KeyD: "right",
+};
+
+function resetManualInput() {
+  manualInput.pointers.clear();
+  manualInput.keys.clear();
+  document.querySelectorAll("[data-direction]").forEach((button) => button.classList.remove("pressed"));
+  stopControl();
+}
+
+function startManualGame() {
+  if (!["MENU", "ERROR"].includes(state.mode)) return;
+  initAudio();
+  releaseCamera();
+  state.inputMode = "manual";
+  $("manualControls").hidden = false;
+  cameraPanel.classList.add("hidden");
+  $("toggleCameraBtn").setAttribute("aria-expanded", "false");
+  beginGame();
+}
+
+function updateManualMotion() {
+  const directions = new Set([...manualInput.pointers.values(), ...[...manualInput.keys].map((key) => keyDirections[key])]);
+  const x = Number(directions.has("right")) - Number(directions.has("left"));
+  const y = Number(directions.has("down")) - Number(directions.has("up"));
+  const length = Math.hypot(x, y);
+  if (!length) { stopControl(); return; }
+  state.controlActive = true;
+  // 触屏上的通道较窄，较低速度便于准确转弯，斜向保持同样速度。
+  hand.tvx = x / length * 85;
+  hand.tvy = y / length * 85;
+}
 
 /** 清除过期的控制输入，避免丢失识别后继续移动。 */
 function stopControl() {
@@ -334,7 +370,10 @@ async function initializeCamera() {
       throw new Error("浏览器无法访问摄像头，请使用 localhost 或 HTTPS 地址打开页面");
     }
     const stream = await navigator.mediaDevices.getUserMedia({
-      video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: "user" },
+      video: {
+        width: { ideal: 640 }, height: { ideal: 480 },
+        facingMode: "user", frameRate: { ideal: 24, max: 30 },
+      },
       audio: false,
     });
     video.srcObject = stream;
@@ -372,7 +411,7 @@ async function initializeCamera() {
       state.camStatus = "Error";
       permissionScreen.querySelector(".sub").innerHTML =
         "摄像头启动失败：" + escapeHtml(describeError(err)) +
-        "<br>提示：必须通过 Live Server（localhost）打开页面，直接双击 HTML 文件时浏览器会禁用摄像头。";
+        "<br>电脑本机可用 localhost；手机和平板访问部署页面时请使用 HTTPS，并在浏览器设置中允许摄像头。";
     }
     return false;
   }
@@ -464,7 +503,14 @@ function describeError(e) {
 /** 预先确认模型文件能被 HTTP 访问，把模糊的 fetch 错误变成明确的 404/500 */
 async function ensureModelFile(path) {
   try {
-    const r = await fetch(path, { method: "HEAD", signal: AbortSignal.timeout(15000) });
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15000);
+    let r;
+    try {
+      r = await fetch(path, { method: "HEAD", signal: controller.signal });
+    } finally {
+      clearTimeout(timeout);
+    }
     if (!r.ok) throw new Error("HTTP " + r.status);
   } catch (e) {
     throw new Error("文件 " + path + " 无法访问（" + describeError(e) + "）");
@@ -672,7 +718,8 @@ function updateHandMotion() {
 
 /** 更新小鸟位置（含墙壁碰撞检测） */
 function updateBirdMovement(dt) {
-  updateHandMotion();
+  if (state.inputMode === "manual") updateManualMotion();
+  else updateHandMotion();
 
   if (state.controlActive) {
     // 有目标速度 → 向目标速度平滑靠拢（每个渲染帧都执行，直到下一次识别刷新）
@@ -772,6 +819,7 @@ function updateFruits(dt) {
    13. 游戏流程：开始 / 结束 / 胜利 / 重置
    ===================================================================== */
 function resetGame() {
+  resetManualInput();
   clearTracking();
   // 小鸟回到起点格 (1,1) 的中心
   bird.x = 1 * CELL + CELL / 2;
@@ -805,6 +853,7 @@ function resetGame() {
 function gameOver() {
   if (state.mode !== "PLAYING") return;
   state.mode = "GAME_OVER";
+  resetManualInput();
   stopControl();
   state.lives = 0;
   $("lives").textContent = state.lives;
@@ -820,6 +869,7 @@ function gameOver() {
 function winGame() {
   if (state.mode !== "PLAYING") return;
   state.mode = "WIN";
+  resetManualInput();
   stopControl();
   playSound("win");
   const ex = EXIT_POS[1] * CELL + CELL / 2;
@@ -837,6 +887,7 @@ function checkWin() {
 
 /** 真正开始一局 */
 function beginGame() {
+  document.activeElement?.blur();
   state.waitingForPlayer = false;
   hideAllOverlays();
   resetGame();
@@ -847,6 +898,8 @@ function beginGame() {
 async function startFlow() {
   if (state.mode !== "MENU") return;
   state.mode = "LOADING";
+  state.inputMode = "gesture";
+  $("manualControls").hidden = true;
   initAudio();
   playSound("start");
   hideAllOverlays();
@@ -883,7 +936,7 @@ async function startFlow() {
     } else {
       permissionScreen.querySelector(".sub").innerHTML =
         "AI 模型加载失败。<br>" + escapeHtml(state.aiError) +
-        "<br>请检查：① 两个 .task 模型文件是否和 index.html 放在同一文件夹；② 必须通过 Live Server（localhost）打开页面。";
+        "<br>请检查模型文件和网络。电脑本机可使用 localhost，手机和平板请通过 HTTPS 访问。也可改用触控 / 键盘模式。";
     }
     return;
   }
@@ -1294,7 +1347,8 @@ function gameLoop(ts) {
 
   // AI 识别（按 TRACK_FPS 节流）
   trackAcc += dt * 1000;
-  if (state.cameraOk && state.aiReady && trackAcc >= 1000 / CONFIG.TRACK_FPS) {
+  const trackFps = window.matchMedia("(pointer: coarse)").matches ? 20 : CONFIG.TRACK_FPS;
+  if (state.cameraOk && state.aiReady && trackAcc >= 1000 / trackFps) {
     trackAcc = 0;
     runTracking();
   }
@@ -1368,10 +1422,13 @@ function setCamDot(cls) {
 }
 
 function updateStatusUI() {
-  chipCam.textContent = "Camera: " + state.camStatus;
-  chipCam.className = "chip " + (state.cameraOk ? "ok" : state.camStatus === "--" ? "" : "bad");
-  chipAi.textContent = "AI: " + (state.aiReady ? "READY" : state.aiError ? "FAILED" : "LOADING");
-  chipAi.className = "chip " + (state.aiReady ? "ok" : state.aiError ? "bad" : "warn");
+  const isManual = state.inputMode === "manual";
+  for (const chip of [chipHand, chipGesture, chipMouth]) chip.hidden = isManual;
+  $("toggleCameraBtn").hidden = isManual;
+  chipCam.textContent = "Camera: " + (isManual ? "未启用" : state.camStatus);
+  chipCam.className = "chip " + (isManual ? "" : state.cameraOk ? "ok" : state.camStatus === "--" ? "" : "bad");
+  chipAi.textContent = "AI: " + (state.inputMode === "manual" ? "未启用" : state.aiReady ? "READY" : state.aiError ? "FAILED" : state.mode === "MENU" ? "待启动" : "LOADING");
+  chipAi.className = "chip " + (state.inputMode === "manual" ? "" : state.aiReady ? "ok" : state.aiError ? "bad" : "warn");
   chipHand.textContent = "Hand: " + (state.handSeen ? "YES" : "NO");
   chipHand.className = "chip " + (state.handSeen ? "ok" : "bad");
   chipGesture.textContent = "Gesture: " + state.gestureLabel;
@@ -1379,7 +1436,7 @@ function updateStatusUI() {
   chipMouth.textContent = "Mouth: " + state.mouthLabel;
   chipMouth.className = "chip " +
     (state.mouthState === "open" ? "warn" : state.faceSeen ? "ok" : "bad");
-  chipControl.textContent = "Control: " + (state.controlActive ? "ACTIVE" : "INACTIVE");
+  chipControl.textContent = (state.inputMode === "manual" ? "触控 / 键盘: " : "手势: ") + (state.controlActive ? "移动中" : "待命");
   chipControl.className = "chip " + (state.controlActive ? "ok" : "");
   camStatusText.textContent = "Camera: " + state.camStatus;
 
@@ -1395,6 +1452,9 @@ function escapeHtml(s) {
 
 /* ---- 事件绑定 ---- */
 $("startBtn").addEventListener("click", startFlow);
+$("manualStartBtn").addEventListener("click", startManualGame);
+$("fallbackStartBtn").addEventListener("click", startManualGame);
+$("eatBtn").addEventListener("click", attemptEatFruit);
 $("reloadBtn").addEventListener("click", () => location.reload());
 $("retryBtn").addEventListener("click", beginGame);
 $("winRetryBtn").addEventListener("click", beginGame);
@@ -1406,12 +1466,49 @@ $("toggleCameraBtn").addEventListener("click", () => {
 });
 
 document.addEventListener("visibilitychange", () => {
+  resetManualInput();
   clearTracking();
   lastTs = 0;
   trackAcc = 0;
   lastVideoTime = -1;
 });
 window.addEventListener("pagehide", releaseCamera);
+window.addEventListener("blur", resetManualInput);
+window.addEventListener("resize", resetManualInput);
+
+// Pointer Events 同时覆盖鼠标、触笔与多指触控，捕获指针保证滑出按钮也能停止。
+document.querySelectorAll("[data-direction]").forEach((button) => {
+  button.addEventListener("pointerdown", (event) => {
+    if (state.mode !== "PLAYING" || state.inputMode !== "manual" || event.button !== 0) return;
+    event.preventDefault();
+    button.setPointerCapture(event.pointerId);
+    manualInput.pointers.set(event.pointerId, button.dataset.direction);
+    button.classList.add("pressed");
+  });
+  const release = (event) => {
+    manualInput.pointers.delete(event.pointerId);
+    if (![...manualInput.pointers.values()].includes(button.dataset.direction)) button.classList.remove("pressed");
+  };
+  button.addEventListener("pointerup", release);
+  button.addEventListener("pointercancel", release);
+  button.addEventListener("lostpointercapture", release);
+  button.addEventListener("contextmenu", (event) => event.preventDefault());
+});
+window.addEventListener("keydown", (event) => {
+  if (state.inputMode !== "manual" || state.mode !== "PLAYING" || event.ctrlKey || event.altKey || event.metaKey) return;
+  if (event.target.closest("button, input, textarea, select, [contenteditable]")) return;
+  if (keyDirections[event.code]) {
+    event.preventDefault();
+    manualInput.keys.add(event.code);
+  } else if (event.code === "Space") {
+    event.preventDefault();
+    if (!event.repeat) attemptEatFruit();
+  }
+});
+window.addEventListener("keyup", (event) => {
+  // 同一方向可能同时按下方向键和 WASD；用物理键记录防止提前松开。
+  manualInput.keys.delete(event.code);
+});
 
 /* =====================================================================
    19. 启动

@@ -9,7 +9,7 @@
 }
 
 html, body {
-  height: 100%;
+  min-height: 100%;
 }
 
 body {
@@ -21,13 +21,21 @@ body {
   justify-content: center;
   padding: 16px 12px 24px;
   min-height: 100vh;
+  min-height: 100svh;
+  padding: max(12px, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right)) max(20px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left));
   -webkit-user-select: none;
   user-select: none;
 }
 
 /* 隐藏的摄像头视频源 */
 #camVideo {
-  display: none;
+  position: fixed;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+  left: 0;
+  bottom: 0;
 }
 
 #app {
@@ -36,6 +44,7 @@ body {
   display: flex;
   flex-direction: column;
   gap: 12px;
+  min-width: 0;
 }
 
 /* ===================== 顶部栏 ===================== */
@@ -59,6 +68,7 @@ body {
   display: flex;
   align-items: center;
   gap: 10px;
+  flex-wrap: wrap;
 }
 
 .hud-item {
@@ -122,11 +132,18 @@ body {
   background: #fff8e7;
 }
 
+button {
+  min-height: 44px;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
 /* ===================== 游戏主区域 ===================== */
 .game-wrap {
   display: flex;
   flex-direction: column;
   gap: 10px;
+  min-width: 0;
 }
 
 .game-area {
@@ -195,9 +212,9 @@ body {
 
 /* ===================== 遮罩层（开始 / 结束 / 胜利） ===================== */
 .overlay {
-  position: absolute;
+  position: fixed;
   inset: 0;
-  z-index: 30;
+  z-index: 100;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -205,7 +222,7 @@ body {
   backdrop-filter: blur(3px);
   -webkit-backdrop-filter: blur(3px);
   overflow-y: auto;
-  padding: 16px;
+  padding: max(16px, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right)) max(16px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left));
 }
 
 .overlay.hidden {
@@ -237,6 +254,7 @@ body {
   color: #3d5a2f;
   letter-spacing: 2px;
   margin-bottom: 8px;
+  overflow-wrap: anywhere;
 }
 
 .card .sub {
@@ -264,8 +282,73 @@ body {
 }
 
 .card .btn-ghost {
-  margin-left: 10px;
+  margin: 12px 0 0;
 }
+
+.start-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+
+.manual-controls {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 16px;
+  background: rgba(8, 30, 22, 0.45);
+  border-radius: 16px;
+}
+
+[hidden] { display: none !important; }
+
+.direction-pad {
+  display: grid;
+  grid-template-columns: repeat(3, 48px);
+  grid-template-rows: repeat(2, 48px);
+  gap: 5px;
+  flex-shrink: 0;
+}
+
+.control-btn {
+  touch-action: none;
+  -webkit-touch-callout: none;
+}
+
+.direction-pad button {
+  font-family: inherit;
+  font-size: 20px;
+  font-weight: 700;
+  color: #fff8e7;
+  background: #285c42;
+  border: 2px solid #8bbd87;
+  border-radius: 12px;
+  cursor: pointer;
+}
+
+.direction-pad button:active, .direction-pad button.pressed {
+  background: #b26717;
+  border-color: #ffd93d;
+}
+
+.dir-up { grid-area: 1 / 2; }
+.dir-left { grid-area: 2 / 1; }
+.dir-down { grid-area: 2 / 2; }
+.dir-right { grid-area: 2 / 3; }
+
+.eat-control {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  text-align: center;
+  color: #fff8e7;
+}
+
+.eat-control small { font-size: 12px; }
+.device-tip { font-size: 12px; color: #e0f2df; text-align: center; }
 
 /* 手势说明 */
 .gesture-guide {
@@ -381,29 +464,66 @@ body {
   border-radius: 6px;
 }
 
-/* ===================== 窄屏适配 ===================== */
-@media (max-width: 640px) {
+/* 平板：保持迷宫比例，标题、预览和数据自适应排列。 */
+@media (max-width: 1024px) {
+  .camera-panel { width: 160px; }
+  .logo { font-size: 26px; }
+  .hud { gap: 6px; }
+  .hud-item { padding: 6px 12px; }
+}
+
+/* 手机：画布随屏幕等比缩放，弹窗独立滚动，不额外撑高游戏区。 */
+@media (max-width: 600px) {
   .top-bar {
-    justify-content: center;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 100px;
+    gap: 8px;
   }
+  .logo { font-size: clamp(19px, 5.4vw, 26px); }
+  .camera-panel { width: 100%; grid-column: 2; grid-row: 1 / 3; }
+  .cam-bar { padding: 4px; gap: 4px; font-size: 10px; }
+  .top-bar:has(.camera-panel.hidden) { grid-template-columns: 1fr; }
   .hud {
-    justify-content: center;
-    flex-wrap: wrap;
+    justify-content: flex-start;
+    gap: 5px;
   }
-  .game-area {
-    min-height: 540px;
-  }
-  #gameCanvas {
-    position: absolute;
-    top: 50%;
-    transform: translateY(-50%);
-  }
-  .camera-panel {
-    width: 200px;
-  }
+  .hud-item { font-size: 12px; padding: 4px 8px; }
+  .hud .btn-ghost { padding: 4px 8px; font-size: 12px; }
+  .hud-score span, .hud-lives span { font-size: 15px; }
   .card {
     padding: 22px 18px;
+    width: 100%;
   }
+  .card h2 { font-size: 28px; }
+  .card-emoji { font-size: 40px; }
+  .guide-img { width: 48px; height: 48px; }
+  .guide-item { padding: 8px; gap: 8px; }
+  .manual-controls { padding: 10px; gap: 8px; }
+  .eat-control .btn-primary { padding: 12px 16px; font-size: 16px; }
+  .eat-control small { max-width: 145px; }
+  .status-bar { gap: 5px; }
+  .chip { font-size: 11px; padding: 5px 8px; }
+  .debug-line { white-space: normal; overflow-wrap: anywhere; font-size: 10px; }
+  .foot { overflow-wrap: anywhere; font-size: 10px; }
+}
+
+/* 手机横屏 / 低矮平板：限制迷宫高度，让操作区更容易触及。 */
+@media (orientation: landscape) and (max-height: 600px) {
+  #app { gap: 8px; }
+  .camera-panel { width: 80px; }
+  .cam-bar { display: none; }
+  .top-bar { display: flex; justify-content: space-between; }
+  .logo { font-size: 21px; }
+  .game-area { width: min(100%, calc((100svh - 95px) * 1.466667)); margin-inline: auto; }
+  .manual-controls { padding: 8px 12px; }
+  .card { padding: 18px; }
+  .device-tip { display: none; }
+}
+
+@media (max-width: 350px) {
+  .direction-pad { grid-template-columns: repeat(3, 44px); grid-template-rows: repeat(2, 44px); gap: 3px; }
+  .manual-controls { padding: 8px; }
+  .eat-control .btn-primary { padding-inline: 10px; }
 }
 
 button:focus-visible {

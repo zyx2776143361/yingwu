@@ -2,7 +2,8 @@
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="theme-color" content="#15604a">
   <title>🐦 Bird Maze — 摄像头手势控制小鸟迷宫</title>
   <link rel="icon" href="data:,">
 
@@ -66,7 +67,7 @@
     <main class="game-wrap">
       <div id="gameArea" class="game-area">
         <!-- 迷宫画布 -->
-        <canvas id="gameCanvas" width="880" height="600"></canvas>
+        <canvas id="gameCanvas" width="880" height="600" aria-label="小鸟迷宫：避开墙壁，收集水果，到达右下角出口"></canvas>
 
         <!-- ============ 开始界面 ============ -->
         <div id="menuScreen" class="overlay">
@@ -92,8 +93,11 @@
               </div>
             </div>
 
-            <p class="warn">需要摄像头权限，请确保浏览器允许使用摄像头。</p>
-            <button id="startBtn" class="btn-primary">▶ Start Game</button>
+            <p class="warn">手势模式需要摄像头权限。手机和平板可用触控，电脑可用方向键或 WASD；空格吃水果。</p>
+            <div class="start-actions">
+              <button id="startBtn" class="btn-primary">📷 手势模式</button>
+              <button id="manualStartBtn" class="btn-ghost">🎮 触控 / 键盘模式</button>
+            </div>
           </div>
         </div>
 
@@ -116,6 +120,7 @@
               Please allow camera access and reload the page.
             </p>
             <button id="reloadBtn" class="btn-primary">🔄 Reload Page</button>
+            <button id="fallbackStartBtn" class="btn-ghost">改用触控 / 键盘</button>
           </div>
         </div>
 
@@ -141,6 +146,20 @@
           </div>
         </div>
       </div>
+
+      <div id="manualControls" class="manual-controls" hidden>
+        <div class="direction-pad" role="group" aria-label="按住方向键移动小鸟">
+          <button class="control-btn dir-up" data-direction="up" aria-label="向上">▲</button>
+          <button class="control-btn dir-left" data-direction="left" aria-label="向左">◀</button>
+          <button class="control-btn dir-down" data-direction="down" aria-label="向下">▼</button>
+          <button class="control-btn dir-right" data-direction="right" aria-label="向右">▶</button>
+        </div>
+        <div class="eat-control">
+          <button id="eatBtn" class="btn-primary control-btn">🍎 吃水果</button>
+          <small>按住方向移动，松开即停<br>键盘：方向键 / WASD · 空格吃水果</small>
+        </div>
+      </div>
+      <p class="device-tip">手机 / 平板横屏可放大迷宫；手势模式请固定设备，让脸和手同时入镜。</p>
 
       <!-- ===================== 状态栏 ===================== -->
       <div class="status-bar">
