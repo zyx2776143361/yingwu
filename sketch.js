@@ -113,3 +113,33 @@ function startGame() {
 }
 document.getElementById("startBtn").addEventListener("click", startGame);
 document.getElementById("retryBtn").addEventListener("click", startGame);
+
+const camCanvas = document.getElementById("cameraCanvas");
+const camCtx = camCanvas.getContext("2d");
+const video = document.getElementById("camVideo");
+
+async function initializeCamera() {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { width: { ideal: 640 }, height: { ideal: 480 } }, audio: false,
+    });
+    video.srcObject = stream;
+    await video.play().catch(() => {});
+    document.getElementById("camStatusText").textContent = "Camera: Active";
+  } catch (err) {
+    document.getElementById("permissionScreen").classList.remove("hidden");
+  }
+}
+
+function drawCameraPreview() {
+  if (video.readyState >= 2) {
+    camCtx.save();
+    camCtx.translate(camCanvas.width, 0);
+    camCtx.scale(-1, 1);
+    camCtx.drawImage(video, 0, 0, camCanvas.width, camCanvas.height);
+    camCtx.restore();
+  }
+  requestAnimationFrame(drawCameraPreview);
+}
+document.getElementById("reloadBtn").addEventListener("click", () => location.reload());
+drawCameraPreview();

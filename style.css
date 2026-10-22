@@ -22,3 +22,7 @@ body {
 .btn-primary:active { transform: translateY(2px); box-shadow: 0 2px 0 #c67d00; }
 .hidden { display: none; }
 .final-score { color: #e8751a; font-size: 26px; font-weight: 800; margin-bottom: 20px; }
+.camera-panel { width: 230px; background: rgba(20,32,24,0.88); border: 2px solid rgba(255,255,255,0.35); border-radius: 14px; overflow: hidden; }
+.camera-panel canvas { display: block; width: 100%; }
+.cam-bar { color: #fff; font-size: 13px; padding: 5px 10px; text-align: center; }
+#camVideo { display: none; }
