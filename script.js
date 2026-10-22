@@ -201,6 +201,7 @@ let gestureRecognizer = null;
 let faceLandmarker = null;
 let lastVideoTime = -1;
 let lastTrackingAt = 0;
+let resultOverlayTimer = null;
 const manualInput = { pointers: new Map(), keys: new Set() };
 const keyDirections = {
   ArrowUp: "up", KeyW: "up", ArrowDown: "down", KeyS: "down",
@@ -819,6 +820,8 @@ function updateFruits(dt) {
    13. 游戏流程：开始 / 结束 / 胜利 / 重置
    ===================================================================== */
 function resetGame() {
+  clearTimeout(resultOverlayTimer);
+  resultOverlayTimer = null;
   resetManualInput();
   clearTracking();
   // 小鸟回到起点格 (1,1) 的中心
@@ -863,7 +866,7 @@ function gameOver() {
   spawnFloatText(bird.x, bird.y - 26, "💥", "#ff4444");
   state.shakeTime = 0.5; // 屏幕震动
   overScoreEl.textContent = state.score;
-  setTimeout(() => showOverlay(gameOverScreen), 500);
+  resultOverlayTimer = setTimeout(() => showOverlay(gameOverScreen), 500);
 }
 
 function winGame() {
@@ -876,7 +879,7 @@ function winGame() {
   const ey = EXIT_POS[0] * CELL + CELL / 2;
   for (let i = 0; i < 42; i++) spawnConfetti(ex, ey);
   winScoreEl.textContent = state.score;
-  setTimeout(() => showOverlay(winScreen), 600);
+  resultOverlayTimer = setTimeout(() => showOverlay(winScreen), 600);
 }
 
 function checkWin() {
@@ -1417,11 +1420,28 @@ function showMenu() {
   state.mode = "MENU";
 }
 
+function switchControlMode() {
+  if (state.mode === "LOADING") return;
+  state.waitingForPlayer = false;
+  releaseCamera();
+  resetGame();
+  state.inputMode = "gesture";
+  $("manualControls").hidden = true;
+  cameraPanel.classList.remove("hidden");
+  $("toggleCameraBtn").hidden = false;
+  $("toggleCameraBtn").setAttribute("aria-expanded", "true");
+  showMenu();
+  updateStatusUI();
+  $("startBtn").focus();
+}
+
 function setCamDot(cls) {
   camStatusDot.className = "dot " + cls;
 }
 
 function updateStatusUI() {
+  $("switchModeBtn").hidden = state.mode === "MENU";
+  $("switchModeBtn").disabled = state.mode === "LOADING";
   const isManual = state.inputMode === "manual";
   for (const chip of [chipHand, chipGesture, chipMouth]) chip.hidden = isManual;
   $("toggleCameraBtn").hidden = isManual;
@@ -1452,6 +1472,9 @@ function escapeHtml(s) {
 
 /* ---- 事件绑定 ---- */
 $("startBtn").addEventListener("click", startFlow);
+document.querySelectorAll("[data-switch-mode]").forEach((button) => {
+  button.addEventListener("click", switchControlMode);
+});
 $("manualStartBtn").addEventListener("click", startManualGame);
 $("fallbackStartBtn").addEventListener("click", startManualGame);
 $("eatBtn").addEventListener("click", attemptEatFruit);

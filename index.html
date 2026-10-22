@@ -57,6 +57,7 @@
       </div>
 
       <div class="hud">
+        <button id="switchModeBtn" class="btn-ghost" data-switch-mode title="结束当前局，重新选择操作模式">🎮 切换模式</button>
         <button id="toggleCameraBtn" class="btn-ghost" aria-controls="cameraPanel" aria-expanded="true" title="显示 / 隐藏摄像头画面">📷 摄像头</button>
         <div class="hud-item hud-score">Score&nbsp;<span id="score">0</span></div>
         <div class="hud-item hud-lives">Lives&nbsp;<span id="lives">1</span></div>
@@ -121,6 +122,7 @@
             </p>
             <button id="reloadBtn" class="btn-primary">🔄 Reload Page</button>
             <button id="fallbackStartBtn" class="btn-ghost">改用触控 / 键盘</button>
+            <button class="btn-ghost" data-switch-mode>切换模式</button>
           </div>
         </div>
 
@@ -132,6 +134,7 @@
             <p class="sub">The bird hit the wall!</p>
             <p class="final-score">Score: <span id="overScore">0</span></p>
             <button id="retryBtn" class="btn-primary">🔄 Play Again</button>
+            <button class="btn-ghost" data-switch-mode>切换模式</button>
           </div>
         </div>
 
@@ -143,6 +146,7 @@
             <p class="sub">You escaped the maze!</p>
             <p class="final-score">Score: <span id="winScore">0</span></p>
             <button id="winRetryBtn" class="btn-primary">🔄 Play Again</button>
+            <button class="btn-ghost" data-switch-mode>切换模式</button>
           </div>
         </div>
       </div>
