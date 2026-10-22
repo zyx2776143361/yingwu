@@ -148,8 +148,9 @@ const video = $("camVideo");
    5. 全局状态
    ===================================================================== */
 const state = {
+  hasActiveGame: false,   // 暂停或切换失败时仍保留当前局
   inputMode: "gesture",   // gesture / manual
-  mode: "MENU",          // MENU / LOADING / WAITING / PLAYING / GAME_OVER / WIN
+  mode: "MENU",          // MENU / LOADING / WAITING / PLAYING / SWITCHING / ERROR / GAME_OVER / WIN
   cameraOk: false,
   camStatus: "--",
   aiReady: false,
@@ -202,6 +203,7 @@ let faceLandmarker = null;
 let lastVideoTime = -1;
 let lastTrackingAt = 0;
 let resultOverlayTimer = null;
+let controlSwitchVersion = 0;
 const manualInput = { pointers: new Map(), keys: new Set() };
 const keyDirections = {
   ArrowUp: "up", KeyW: "up", ArrowDown: "down", KeyS: "down",
@@ -219,6 +221,10 @@ function startManualGame() {
   if (!["MENU", "ERROR"].includes(state.mode)) return;
   initAudio();
   releaseCamera();
+  if (state.hasActiveGame) {
+    resumeWithInput("manual");
+    return;
+  }
   state.inputMode = "manual";
   $("manualControls").hidden = false;
   cameraPanel.classList.add("hidden");
@@ -384,6 +390,7 @@ async function initializeCamera() {
     lastTrackingAt = performance.now();
     for (const track of stream.getVideoTracks()) {
       track.addEventListener("ended", () => {
+        controlSwitchVersion++;
         releaseCamera();
         state.mode = "ERROR";
         state.waitingForPlayer = false;
@@ -820,6 +827,7 @@ function updateFruits(dt) {
    13. 游戏流程：开始 / 结束 / 胜利 / 重置
    ===================================================================== */
 function resetGame() {
+  state.hasActiveGame = false;
   clearTimeout(resultOverlayTimer);
   resultOverlayTimer = null;
   resetManualInput();
@@ -855,6 +863,7 @@ function resetGame() {
 
 function gameOver() {
   if (state.mode !== "PLAYING") return;
+  state.hasActiveGame = false;
   state.mode = "GAME_OVER";
   resetManualInput();
   stopControl();
@@ -871,6 +880,7 @@ function gameOver() {
 
 function winGame() {
   if (state.mode !== "PLAYING") return;
+  state.hasActiveGame = false;
   state.mode = "WIN";
   resetManualInput();
   stopControl();
@@ -894,6 +904,7 @@ function beginGame() {
   state.waitingForPlayer = false;
   hideAllOverlays();
   resetGame();
+  state.hasActiveGame = true;
   state.mode = "PLAYING";
 }
 
@@ -1420,8 +1431,80 @@ function showMenu() {
   state.mode = "MENU";
 }
 
-function switchControlMode() {
-  if (state.mode === "LOADING") return;
+/** 切换只清理输入，不改动位置、得分、水果或生命值。 */
+function resumeWithInput(inputMode) {
+  controlSwitchVersion++;
+  resetManualInput();
+  clearTracking();
+  state.inputMode = inputMode;
+  state.waitingForPlayer = false;
+  $("manualControls").hidden = inputMode !== "manual";
+  cameraPanel.classList.toggle("hidden", inputMode === "manual");
+  $("toggleCameraBtn").setAttribute("aria-expanded", String(inputMode === "gesture"));
+  hideAllOverlays();
+  lastTs = 0;
+  trackAcc = 0;
+  lastVideoTime = -1;
+  lastTrackingAt = performance.now();
+  state.mode = "PLAYING";
+  updateStatusUI();
+  document.activeElement?.blur();
+}
+
+async function switchToGesture() {
+  if (!state.hasActiveGame || !["PLAYING", "ERROR"].includes(state.mode)) return;
+  const switchVersion = ++controlSwitchVersion;
+  state.mode = "SWITCHING";
+  resetManualInput();
+  clearTracking();
+  initAudio();
+  hideAllOverlays();
+  loadingTitle.textContent = "正在切换到摄像头…";
+  loadingDetail.textContent = "游戏已暂停，位置、分数和水果进度已保留。请允许摄像头权限。";
+  showOverlay(loadingScreen);
+  updateStatusUI();
+  try {
+    const cameraReady = await initializeCamera();
+    if (switchVersion !== controlSwitchVersion) return;
+    if (!cameraReady) {
+      // initializeCamera 已提供具体的权限或设备错误说明。
+      state.mode = "ERROR";
+      permissionScreen.querySelector("h2").textContent = "摄像头切换失败，进度已保留";
+      hideAllOverlays();
+      showOverlay(permissionScreen);
+      return;
+    }
+    loadingTitle.textContent = "正在准备手势识别…";
+    await initializeAI();
+    if (switchVersion !== controlSwitchVersion) return;
+    if (!state.cameraOk) throw new Error("摄像头已断开，请重新连接后重试");
+    setCamDot("dot-green");
+    resumeWithInput("gesture");
+  } catch (error) {
+    if (switchVersion !== controlSwitchVersion) return;
+    releaseCamera();
+    state.mode = "ERROR";
+    permissionScreen.querySelector("h2").textContent = "摄像头切换失败，进度已保留";
+    permissionScreen.querySelector(".sub").textContent =
+      describeError(error) + "。可以重试摄像头，或用键盘 / 触控继续当前游戏。";
+    hideAllOverlays();
+    showOverlay(permissionScreen);
+  } finally {
+    updateStatusUI();
+  }
+}
+
+async function switchControlMode() {
+  if (["LOADING", "SWITCHING"].includes(state.mode)) return;
+  if (state.hasActiveGame) {
+    if (state.inputMode === "gesture" || state.mode === "ERROR") {
+      releaseCamera();
+      resumeWithInput("manual");
+    } else {
+      await switchToGesture();
+    }
+    return;
+  }
   state.waitingForPlayer = false;
   releaseCamera();
   resetGame();
@@ -1441,7 +1524,15 @@ function setCamDot(cls) {
 
 function updateStatusUI() {
   $("switchModeBtn").hidden = state.mode === "MENU";
-  $("switchModeBtn").disabled = state.mode === "LOADING";
+  $("switchModeBtn").disabled = ["LOADING", "SWITCHING"].includes(state.mode);
+  $("switchModeBtn").textContent = state.hasActiveGame
+    ? (state.inputMode === "manual" ? "📷 切换到摄像头" : "🎮 切换到键盘 / 触控")
+    : "🎮 选择模式";
+  $("reloadBtn").textContent = state.hasActiveGame ? "📷 重试摄像头" : "🔄 Reload Page";
+  $("fallbackStartBtn").textContent = state.hasActiveGame ? "🎮 用键盘 / 触控继续当前游戏" : "改用触控 / 键盘";
+  document.querySelectorAll("[data-switch-mode]:not(#switchModeBtn)").forEach((button) => {
+    button.hidden = state.hasActiveGame;
+  });
   const isManual = state.inputMode === "manual";
   for (const chip of [chipHand, chipGesture, chipMouth]) chip.hidden = isManual;
   $("toggleCameraBtn").hidden = isManual;
@@ -1478,7 +1569,10 @@ document.querySelectorAll("[data-switch-mode]").forEach((button) => {
 $("manualStartBtn").addEventListener("click", startManualGame);
 $("fallbackStartBtn").addEventListener("click", startManualGame);
 $("eatBtn").addEventListener("click", attemptEatFruit);
-$("reloadBtn").addEventListener("click", () => location.reload());
+$("reloadBtn").addEventListener("click", () => {
+  if (state.hasActiveGame) switchToGesture();
+  else location.reload();
+});
 $("retryBtn").addEventListener("click", beginGame);
 $("winRetryBtn").addEventListener("click", beginGame);
 
