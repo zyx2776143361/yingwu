@@ -1,5 +1,67 @@
+/* =====================================================================
+   Bird Maze — 摄像头手势控制小鸟迷宫
+   ---------------------------------------------------------------------
+   核心思路：
+   1. 摄像头视频 → MediaPipe Gesture Recognizer（老师提供的
+      gesture_recognizer.task）识别「握拳 / Closed_Fist」；
+   2. 握拳时，用 21 个手部关键点计算拳头中心，与上一帧比较得到
+      手部移动方向 → 平滑地驱动小鸟移动（带死区 + 平滑，防抖动）；
+   3. MediaPipe Face Landmarker 识别人脸关键点，用上下嘴唇距离判断
+      「张嘴 / 闭嘴」；完成一次 张嘴 → 闭嘴 且小鸟离水果足够近，
+      才算吃到水果；
+   4. 迷宫墙壁碰撞：计算下一帧位置 → 检测圆形碰撞范围是否压到墙 →
+      撞墙立即 Game Over；
+   5. 到达出口 = 胜利。
+   全程在浏览器本地处理，摄像头画面不上传任何服务器。
+   ===================================================================== */
 "use strict";
 
+/* =====================================================================
+   1. 配置参数（想调节手感，改这里即可）
+   ===================================================================== */
+const CONFIG = {
+  // ---- 摄像头 / 显示 ----
+  MIRROR_VIDEO: true,        // 摄像头画面按「镜子」方式显示；左右控制方向会自动适配
+
+  // ---- 手部移动控制 ----
+  HAND_DEAD_ZONE: 0.004,     // 手部位移死区（归一化坐标/识别帧）：小于该值的抖动忽略
+  HAND_SENSITIVITY: 8000,    // 手部位移 → 小鸟目标速度（px/s）的换算系数
+  BIRD_MAX_SPEED: 175,       // 小鸟最大速度（像素/秒）
+  VELOCITY_SMOOTHING: 0.30,  // 速度平滑系数（0~1，越小越平滑）
+  HAND_SMOOTHING: 0.55,      // 拳头中心平滑系数（越小越抗抖，但反应越慢）
+
+  // ---- 小鸟 ----
+  BIRD_RADIUS: 12,           // 小鸟碰撞半径（像素）
+
+  // ---- 水果 ----
+  EAT_DISTANCE: 36,          // 小鸟中心与水果中心的「有效吃水果距离」（像素）
+
+  // ---- 嘴部识别 ----
+  MOUTH_OPEN_THRESHOLD: 0.055,   // 嘴高/脸高 比例超过该值 → 判定张嘴
+  MOUTH_CLOSED_THRESHOLD: 0.04,  // 比例低于该值 → 判定闭嘴（两个阈值之间为滞回区）
+
+  // ---- 手势识别 ----
+  GESTURE_MIN_SCORE: 0.55,   // 手势类别最低置信度
+  TRACK_FPS: 30,             // AI 识别帧率上限（节流，避免太吃性能）
+  USE_CPU_ONLY: false,        // 调为 true 可关闭 GPU 加速（GPU 报错时切换到 CPU 推理）
+
+  // ---- 模型路径（与 index.html 同级，离线可用）----
+  GESTURE_MODEL: "gesture_recognizer.task",
+  FACE_MODEL: "face_landmarker.task",
+  // 人脸模型 CDN 兜底（本地文件丢失时自动使用）
+  FACE_MODEL_FALLBACK: "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/latest/face_landmarker.task",
+  // MediaPipe WASM 运行库回退：jsdelivr（有 CORS 头，国内可用）→ unpkg → npmmirror
+  MEDIAPIPE_WASM_URL: "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm",
+  MEDIAPIPE_WASM_NPM: "https://unpkg.com/@mediapipe/tasks-vision@0.10.14/wasm",
+  MEDIAPIPE_WASM_FALLBACK: "https://registry.npmmirror.com/@mediapipe/tasks-vision/0.10.14/files/wasm",
+};
+
+/* =====================================================================
+   2. 迷宫数据
+   已去掉最外圈一圈墙：由森林边框图（beijing.png）充当游戏边界，
+   迷宫外格子（r<0/r>=ROWS/c<0/c>=COLS）一律视为墙，撞上去 = 游戏结束。
+   起点 S(0,0) → 出口 E(12,18)，8 个水果全部可达（BFS 已校验）。
+   ===================================================================== */
 const MAZE_MAP = [
   "######################",
   "#S#         #        #",
@@ -14,132 +76,1264 @@ const MAZE_MAP = [
   "# ####### #########  #",
   "#   #     #   #      #",
   "### # ##### # # #### #",
-  "#     #     #      E #",
+  "#     #     #       E#",
   "######################",
 ];
-const COLS = MAZE_MAP[0].length, ROWS = MAZE_MAP.length, CELL = 40;
-const EAT_DISTANCE = 36;
 
+// 水果位置 [行, 列]（全部在可行走格子上，已校验）
 const FRUIT_POSITIONS = [
-  [9, 3], [13, 3], [9, 9], [5, 7], [1, 11], [7, 11], [7, 17], [11, 17],
+  [9, 3], [13, 3], [9, 9], [5, 7],
+  [1, 11], [7, 11], [7, 17], [11, 17],
 ];
-const FRUIT_EMOJIS = ["🍎", "🍌", "🍓", "🍊", "🍇"];
 
-const canvas = document.getElementById("gameCanvas");
-const ctx = canvas.getContext("2d");
-const scoreEl = document.getElementById("score");
-const overScoreEl = document.getElementById("overScore");
+// 水果贴图（已上传到 Cloudinary CDN）
+const FRUIT_CDN = "https://res.cloudinary.com/kjd0jh3m/image/upload/v1792315516/";
+const FRUIT_FILES = ["apple", "banana", "caomei", "chengzi", "putao"];
+const FRUIT_IMAGES = FRUIT_FILES.map((n) => {
+  const im = new Image();
+  im.src = FRUIT_CDN + n + ".webp";
+  return im;
+});
 
-const bird = { x: CELL + CELL / 2, y: CELL + CELL / 2, r: 12 };
-let score = 0;
-let fruits = [];
+const EXIT_POS = [13, 20]; // 出口格子（行, 列）：右下角紧贴右墙
 
-const keys = {};
-window.addEventListener("keydown", (e) => (keys[e.key] = true));
-window.addEventListener("keyup", (e) => (keys[e.key] = false));
+/* =====================================================================
+   3. 画布 / 网格常量
+   ===================================================================== */
+const COLS = MAZE_MAP[0].length; // 22
+const ROWS = MAZE_MAP.length;    // 16
+const CELL = 40;                 // 每格像素（canvas 880 x 600 = 22x15 格）
 
-function resetFruits() {
-  fruits = FRUIT_POSITIONS.map(([r, c], i) => ({
-    x: c * CELL + CELL / 2, y: r * CELL + CELL / 2,
-    emoji: FRUIT_EMOJIS[i % FRUIT_EMOJIS.length], eaten: false,
-  }));
-}
-function checkWallCollision(x, y) {
-  const r = bird.r;
-  for (let rr = Math.floor((y - r) / CELL); rr <= Math.floor((y + r) / CELL); rr++)
-    for (let cc = Math.floor((x - r) / CELL); cc <= Math.floor((x + r) / CELL); cc++)
-      if (rr < 0 || rr >= ROWS || cc < 0 || cc >= COLS || MAZE_MAP[rr][cc] === "#") return true;
-  return false;
-}
-function roundRect(x, y, w, h, r) {
-  ctx.beginPath(); ctx.moveTo(x + r, y);
-  ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r);
-  ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.fill();
-}
-function drawMaze() {
-  ctx.fillStyle = "#eaf7e2";
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-  for (let r = 0; r < ROWS; r++)
-    for (let c = 0; c < COLS; c++)
-      if (MAZE_MAP[r][c] === "#") { ctx.fillStyle = "#2f9e44"; roundRect(c * CELL + 3, r * CELL + 3, CELL - 6, CELL - 6, 8); }
-}
-function drawFruits() {
-  ctx.font = "26px sans-serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
-  for (const f of fruits) if (!f.eaten) ctx.fillText(f.emoji, f.x, f.y);
-}
-function drawBird() {
-  ctx.fillStyle = "#ffb02e";
-  ctx.beginPath(); ctx.arc(bird.x, bird.y, bird.r, 0, Math.PI * 2); ctx.fill();
-  ctx.fillStyle = "#2b2b2b";
-  ctx.beginPath(); ctx.arc(bird.x + 4, bird.y - 3, 2.5, 0, Math.PI * 2); ctx.fill();
-}
+const GRID = MAZE_MAP.map((row) => row.split("")); // 字符网格，用于碰撞检测
 
-let running = false, spaceWasPressed = false;
-function gameOver() {
-  running = false;
-  overScoreEl.textContent = score;
-  document.getElementById("gameOverScreen").classList.remove("hidden");
-}
-function loop() {
-  if (!running) return;
-  const speed = 4;
-  const nx = bird.x + (keys["ArrowRight"] ? speed : 0) - (keys["ArrowLeft"] ? speed : 0);
-  const ny = bird.y + (keys["ArrowDown"] ? speed : 0) - (keys["ArrowUp"] ? speed : 0);
-  if (checkWallCollision(nx, ny)) { gameOver(); return; }
-  bird.x = nx; bird.y = ny;
+const gameCanvas = document.getElementById("gameCanvas");
+const ctx = gameCanvas.getContext("2d");
 
-  if (keys[" "] && !spaceWasPressed) {
-    spaceWasPressed = true;
-    let near = null, best = Infinity;
-    for (const f of fruits) {
-      if (f.eaten) continue;
-      const d = Math.hypot(bird.x - f.x, bird.y - f.y);
-      if (d < best) { best = d; near = f; }
-    }
-    if (near && best < EAT_DISTANCE) { near.eaten = true; score += 10; scoreEl.textContent = score; }
+const CAM_W = 320, CAM_H = 240;
+const cameraCanvas = document.getElementById("cameraCanvas");
+const camCtx = cameraCanvas.getContext("2d");
+
+// 小鸟贴图（img 文件夹里的 fly R）
+const birdImg = new Image();
+birdImg.src = "https://res.cloudinary.com/kjd0jh3m/image/upload/v1792315516/fly_R.webp";
+
+/* =====================================================================
+   4. DOM 元素
+   ===================================================================== */
+const $ = (id) => document.getElementById(id);
+const menuScreen = $("menuScreen");
+const loadingScreen = $("loadingScreen");
+const permissionScreen = $("permissionScreen");
+const gameOverScreen = $("gameOverScreen");
+const winScreen = $("winScreen");
+const loadingTitle = $("loadingTitle");
+const loadingDetail = $("loadingDetail");
+const scoreEl = $("score");
+const overScoreEl = $("overScore");
+const winScoreEl = $("winScore");
+const chipCam = $("chipCam");
+const chipAi = $("chipAi");
+const chipHand = $("chipHand");
+const chipGesture = $("chipGesture");
+const chipMouth = $("chipMouth");
+const chipControl = $("chipControl");
+const debugLine = $("debugLine");
+const camStatusDot = $("camStatusDot");
+const camStatusText = $("camStatusText");
+const cameraPanel = $("cameraPanel");
+const video = $("camVideo");
+
+/* =====================================================================
+   5. 全局状态
+   ===================================================================== */
+const state = {
+  mode: "MENU",          // MENU / LOADING / WAITING / PLAYING / GAME_OVER / WIN
+  cameraOk: false,
+  camStatus: "--",
+  aiReady: false,
+  aiError: "",
+
+  // 识别结果
+  handSeen: false,
+  handLandmarks: null,   // 21 个手部关键点（本次识别）
+  handUpdated: false,    // 是否有新的识别数据到达（AI 30fps / 渲染 60fps+，对齐用）
+  isFist: false,
+  gestureLabel: "NONE",
+  gestureConf: 0,
+
+  faceSeen: false,
+  faceLandmarks: null,   // 468 个人脸关键点
+  mouthState: "closed",  // open / closed
+  mouthLabel: "--",
+  mouthWasOpened: false, // 张嘴 → 闭嘴 状态机标记
+  mar: 0,                // 嘴高/脸高 比例（调试用）
+
+  controlActive: false,
+  waitingForPlayer: false,
+  waitStart: 0,
+
+  score: 0,
+  lives: 1,
+  fruits: [],
+  birdDead: false,
+  chewTimer: 0,
+  shakeTime: 0,
+  effects: { particles: [], floatTexts: [] },
+};
+
+/* 小鸟对象 */
+const bird = { x: 0, y: 0, vx: 0, vy: 0 };
+
+/* 手部运动追踪（跨帧比较用） */
+const hand = {
+  baselined: false, // 是否已经建立基准（握拳刚出现的第一帧只建基准，不产生位移）
+  sx: 0, sy: 0,     // 平滑后的拳头中心（归一化 0~1）
+  px: 0, py: 0,     // 上一帧的拳头中心
+  dxRaw: 0, dyRaw: 0, // 原始位移（调试用）
+  tvx: 0, tvy: 0,   // 当前目标速度（px/s），新识别帧刷新，渲染帧复用
+};
+
+/* MediaPipe 模型实例 */
+let vision = null;          // FilesetResolver 返回的命名空间
+let gestureRecognizer = null;
+let faceLandmarker = null;
+
+/* 音效 */
+let audioCtx = null;
+
+/* =====================================================================
+   6. 音效（Web Audio API 生成，无需外部音频文件）
+   ===================================================================== */
+function initAudio() {
+  if (!audioCtx) {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (AC) audioCtx = new AC();
   }
-  if (!keys[" "]) spaceWasPressed = false;
-
-  drawMaze(); drawFruits(); drawBird();
-  requestAnimationFrame(loop);
+  if (audioCtx && audioCtx.state === "suspended") audioCtx.resume();
 }
-function startGame() {
-  bird.x = CELL + CELL / 2; bird.y = CELL + CELL / 2;
-  score = 0; scoreEl.textContent = "0";
-  resetFruits();
-  document.getElementById("menuScreen").classList.add("hidden");
-  document.getElementById("gameOverScreen").classList.add("hidden");
-  running = true; loop();
+
+/** 播放一个简单音符 */
+function tone(freq, dur, type, gain, delay = 0) {
+  if (!audioCtx) return;
+  const t0 = audioCtx.currentTime + delay;
+  const osc = audioCtx.createOscillator();
+  const g = audioCtx.createGain();
+  osc.type = type;
+  osc.frequency.value = freq;
+  g.gain.setValueAtTime(0.0001, t0);
+  g.gain.exponentialRampToValueAtTime(gain, t0 + 0.012);
+  g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+  osc.connect(g).connect(audioCtx.destination);
+  osc.start(t0);
+  osc.stop(t0 + dur + 0.05);
 }
-document.getElementById("startBtn").addEventListener("click", startGame);
-document.getElementById("retryBtn").addEventListener("click", startGame);
 
-const camCanvas = document.getElementById("cameraCanvas");
-const camCtx = camCanvas.getContext("2d");
-const video = document.getElementById("camVideo");
+/** 音效文件（已上传到 Cloudinary CDN）；加载失败时自动回退到合成音 */
+const SFX_FILES = {
+  eat: "https://res.cloudinary.com/kjd0jh3m/video/upload/v1792316004/eat.mp3",
+  hit: "https://res.cloudinary.com/kjd0jh3m/video/upload/v1792316005/hit.mp3",
+  win: "https://res.cloudinary.com/kjd0jh3m/video/upload/v1792316005/win.mp3",
+};
+const SFX_AUDIO = {};
+for (const k of Object.keys(SFX_FILES)) {
+  SFX_AUDIO[k] = new Audio(SFX_FILES[k]);
+  SFX_AUDIO[k].volume = 0.6;
+}
 
+/** 播放游戏音效：eat 吃水果 / hit 撞墙 / win 胜利 / start 开始 */
+function playSound(name) {
+  // 优先播放真实音效文件
+  if (SFX_AUDIO[name]) {
+    try {
+      const a = SFX_AUDIO[name];
+      a.currentTime = 0;
+      a.play().catch(() => playSynth(name)); // 播放失败（如未授权）用合成音兜底
+      return;
+    } catch { /* 落到合成音 */ }
+  }
+  playSynth(name);
+}
+
+/** 合成音效兜底（Web Audio API 实时生成） */
+function playSynth(name) {
+  if (!audioCtx) return;
+  switch (name) {
+    case "eat": // 轻快的上升音
+      tone(520, 0.09, "sine", 0.22);
+      tone(760, 0.12, "sine", 0.22, 0.07);
+      tone(1040, 0.10, "sine", 0.16, 0.14);
+      break;
+    case "hit": { // 低沉撞击 + 噪声
+      tone(150, 0.28, "sawtooth", 0.4);
+      const len = audioCtx.sampleRate * 0.18;
+      const buf = audioCtx.createBuffer(1, len, audioCtx.sampleRate);
+      const data = buf.getChannelData(0);
+      for (let i = 0; i < len; i++) data[i] = (Math.random() * 2 - 1) * (1 - i / len);
+      const src = audioCtx.createBufferSource();
+      src.buffer = buf;
+      const g = audioCtx.createGain();
+      g.gain.value = 0.35;
+      const filter = audioCtx.createBiquadFilter();
+      filter.type = "lowpass";
+      filter.frequency.value = 900;
+      src.connect(filter).connect(g).connect(audioCtx.destination);
+      src.start();
+      break;
+    }
+    case "win": // 上行琶音
+      [523, 659, 784, 1047].forEach((f, i) => tone(f, 0.18, "triangle", 0.25, i * 0.13));
+      break;
+    case "start": // 开始提示
+      tone(660, 0.1, "sine", 0.2);
+      tone(990, 0.14, "sine", 0.2, 0.1);
+      break;
+  }
+}
+
+/* =====================================================================
+   7. 摄像头初始化
+   ===================================================================== */
 async function initializeCamera() {
+  if (state.cameraOk) return true;
   try {
     const stream = await navigator.mediaDevices.getUserMedia({
-      video: { width: { ideal: 640 }, height: { ideal: 480 } }, audio: false,
+      video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: "user" },
+      audio: false,
     });
     video.srcObject = stream;
+    video.muted = true;
+    await new Promise((res) => {
+      if (video.readyState >= 1) return res();
+      video.onloadedmetadata = res;
+    });
     await video.play().catch(() => {});
-    document.getElementById("camStatusText").textContent = "Camera: Active";
+    state.cameraOk = true;
+    state.camStatus = "Active";
+    return true;
   } catch (err) {
-    document.getElementById("permissionScreen").classList.remove("hidden");
+    console.error("摄像头初始化失败:", err);
+    state.cameraOk = false;
+    if (err.name === "NotFoundError" || err.name === "DevicesNotFoundError") {
+      state.camStatus = "NoCamera";
+      permissionScreen.querySelector(".sub").innerHTML =
+        "未检测到摄像头。<br>请连接摄像头后重新加载页面。";
+    } else if (err.name === "NotAllowedError" || err.name === "PermissionDeniedError") {
+      state.camStatus = "Denied";
+      permissionScreen.querySelector(".sub").innerHTML =
+        "Camera permission is required to play this game.<br>Please allow camera access and reload the page.";
+    } else {
+      state.camStatus = "Error";
+      permissionScreen.querySelector(".sub").innerHTML =
+        "摄像头启动失败：" + err.name +
+        "<br>提示：必须通过 Live Server（localhost）打开页面，直接双击 HTML 文件时浏览器会禁用摄像头。";
+    }
+    return false;
   }
 }
 
-function drawCameraPreview() {
+/* =====================================================================
+   8. AI 模型加载（手势识别 + 人脸关键点）
+   ===================================================================== */
+/** 等待 index.html 中的 ESM 模块把 MediaPipe 类挂载到 window.__mp */
+function waitForMediaPipe(timeoutMs = 15000) {
+  return new Promise((resolve, reject) => {
+    const t0 = Date.now();
+    (function poll() {
+      if (window.__mp) return resolve(window.__mp);
+      if (window.__mpError) {
+        return reject(new Error("MediaPipe 运行库加载失败：" + window.__mpError));
+      }
+      if (Date.now() - t0 > timeoutMs) {
+        return reject(new Error("MediaPipe 运行库加载超时（请确认 assets/lib/ 文件完整，或联网后重试）"));
+      }
+      setTimeout(poll, 100);
+    })();
+  });
+}
+
+async function initializeAI() {
+  if (state.aiReady) return;
+  try {
+    const mp = await waitForMediaPipe();
+
+    loadingDetail.textContent = "加载 MediaPipe WASM 运行库…";
+    // 三级回退：本地 → npmmirror 国内镜像 → jsdelivr
+    const wasmSources = [CONFIG.MEDIAPIPE_WASM_URL, CONFIG.MEDIAPIPE_WASM_NPM, CONFIG.MEDIAPIPE_WASM_FALLBACK];
+    let wasmOk = false;
+    for (const base of wasmSources) {
+      try {
+        vision = await mp.FilesetResolver.forVisionTasks(base);
+        wasmOk = true;
+        break;
+      } catch (eWasm) {
+        console.warn("WASM 运行库加载失败，换下一个来源:", base, eWasm);
+      }
+    }
+    if (!wasmOk) throw new Error("WASM 运行库三个来源（本地/npmmirror/jsdelivr）都加载失败");
+
+    loadingDetail.textContent = "加载手势识别模型 gesture_recognizer.task…";
+    await ensureModelFile(CONFIG.GESTURE_MODEL);
+    try {
+      gestureRecognizer = await createGestureRecognizer(mp);
+    } catch (e) {
+      console.error("手势模型创建失败:", e);
+      throw new Error("手势模型加载失败：" + describeError(e));
+    }
+
+    loadingDetail.textContent = "加载人脸关键点模型 face_landmarker.task…";
+    await ensureModelFile(CONFIG.FACE_MODEL);
+    try {
+      faceLandmarker = await createFaceLandmarker(mp);
+    } catch (e) {
+      console.error("人脸模型创建失败:", e);
+      throw new Error("人脸模型加载失败：" + describeError(e));
+    }
+
+    state.aiReady = true;
+    console.log("AI 模型加载完成 ✅（手势识别 + 人脸关键点）");
+  } catch (err) {
+    console.error("AI 模型加载失败:", err);
+    state.aiError = String(err.message || err);
+    throw err;
+  }
+}
+
+/** 把各种异常对象（Error / Event / EventTarget）转成可读字符串 */
+function describeError(e) {
+  if (!e) return String(e);
+  const parts = [];
+  if (e.name) parts.push(e.name);
+  if (e.message) parts.push(e.message);
+  if (e.type) parts.push("type=" + e.type);
+  if (e.target && e.target.status) parts.push("HTTP " + e.target.status);
+  if (e.detail) parts.push("detail=" + JSON.stringify(e.detail));
+  return parts.length ? parts.join(" | ") : String(e);
+}
+
+/** 预先确认模型文件能被 HTTP 访问，把模糊的 fetch 错误变成明确的 404/500 */
+async function ensureModelFile(path) {
+  try {
+    const r = await fetch(path, { method: "GET" });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+  } catch (e) {
+    throw new Error("文件 " + path + " 无法访问（" + describeError(e) + "）");
+  }
+}
+
+/** 手势识别：GPU 优先，失败自动回退 CPU */
+async function createGestureRecognizer(mp) {
+  const opts = (delegate) => ({
+    baseOptions: { modelAssetPath: CONFIG.GESTURE_MODEL, delegate },
+    runningMode: "VIDEO",
+    numHands: 1,
+  });
+  if (CONFIG.USE_CPU_ONLY) {
+    return await mp.GestureRecognizer.createFromOptions(vision, opts("CPU"));
+  }
+  try {
+    return await mp.GestureRecognizer.createFromOptions(vision, opts("GPU"));
+  } catch (e) {
+    console.warn("手势识别 GPU 推理失败，回退 CPU:", describeError(e));
+    return await mp.GestureRecognizer.createFromOptions(vision, opts("CPU"));
+  }
+}
+
+/** 人脸关键点：优先本地模型文件，失败自动用 CDN 兜底 */
+async function createFaceLandmarker(mp) {
+  const opts = (modelPath, delegate) => ({
+    baseOptions: { modelAssetPath: modelPath, delegate },
+    runningMode: "VIDEO",
+    numFaces: 1,
+  });
+  if (CONFIG.USE_CPU_ONLY) {
+    return await mp.FaceLandmarker.createFromOptions(vision, opts(CONFIG.FACE_MODEL, "CPU"));
+  }
+  try {
+    return await mp.FaceLandmarker.createFromOptions(vision, opts(CONFIG.FACE_MODEL, "GPU"));
+  } catch (e) {
+    console.warn("本地人脸模型加载失败，尝试 CDN 兜底:", describeError(e));
+    return await mp.FaceLandmarker.createFromOptions(
+      vision, opts(CONFIG.FACE_MODEL_FALLBACK, "CPU"));
+  }
+}
+
+/* =====================================================================
+   9. 手势识别：判断是否握拳（Closed_Fist）
+   ===================================================================== */
+/** 每帧识别回调：把 MediaPipe 结果翻译成「是否握拳」 */
+function detectFist(result) {
+  // 没有检测到手
+  if (!result.landmarks || result.landmarks.length === 0) {
+    state.handSeen = false;
+    state.handLandmarks = null;
+    state.isFist = false;
+    state.gestureLabel = "NONE";
+    state.gestureConf = 0;
+    return false;
+  }
+
+  state.handSeen = true;
+  state.handLandmarks = result.landmarks[0]; // 只跟踪一只手
+
+  // 方式一：直接使用模型输出的手势类别（老师模型支持 Closed_Fist）
+  const g = result.gestures && result.gestures[0] && result.gestures[0][0];
+  if (g && typeof g.categoryName === "string" && g.categoryName) {
+    state.gestureConf = g.score;
+    if (g.categoryName === "None" || g.score < CONFIG.GESTURE_MIN_SCORE) {
+      state.gestureLabel = g.categoryName === "None" ? "NONE" : "NONE(低置信)";
+      state.isFist = false;
+      return false;
+    }
+    state.gestureLabel =
+      g.categoryName === "Closed_Fist" ? "FIST" : "OPEN(" + g.categoryName + ")";
+    state.isFist = g.categoryName === "Closed_Fist";
+    return state.isFist;
+  }
+
+  // 方式二（兜底）：如果模型不输出手势类别（例如被换成了只有关键点的
+  // hand_landmarker 模型），则用关键点几何启发式判断握拳 —— 同样是真实逻辑。
+  const fist = landmarkFistCheck(state.handLandmarks);
+  state.gestureLabel = fist ? "FIST (landmark)" : "OPEN (landmark)";
+  state.gestureConf = fist ? 1 : 0;
+  state.isFist = fist;
+  return fist;
+}
+
+/** 纯关键点握拳判断：4 根手指指尖是否向掌心弯曲 */
+function landmarkFistCheck(lm) {
+  const d = (a, b) => Math.hypot(lm[a].x - lm[b].x, lm[a].y - lm[b].y);
+  let curled = 0;
+  // [指尖, 指根]：食指 8/5、中指 12/9、无名指 16/13、小指 20/17
+  for (const [tip, mcp] of [[8, 5], [12, 9], [16, 13], [20, 17]]) {
+    if (d(tip, 0) < d(mcp, 0) * 0.85) curled++; // 指尖比指根更靠近手腕 = 弯曲
+  }
+  // 拇指：指尖靠近食指根部 = 收拢
+  const thumbCurled = d(4, 5) < d(3, 5) * 0.95;
+  return curled >= 3 && (curled >= 4 || thumbCurled);
+}
+
+/** 拳头中心：手腕 + 四指根部（MCP）的平均位置 */
+function palmCenter(lm) {
+  return {
+    x: (lm[0].x + lm[5].x + lm[9].x + lm[13].x + lm[17].x) / 5,
+    y: (lm[0].y + lm[5].y + lm[9].y + lm[13].y + lm[17].y) / 5,
+  };
+}
+
+/* =====================================================================
+   10. 嘴部识别：张嘴 / 闭嘴
+   ===================================================================== */
+/** 嘴高/脸高比例：上唇内沿(13)到 下唇内沿(14) / 额头(10)到下巴(152) */
+function mouthAspectRatio(faceLm) {
+  const y13 = faceLm[13].y, y14 = faceLm[14].y;
+  const y10 = faceLm[10].y, y152 = faceLm[152].y;
+  const faceH = Math.max(1e-6, Math.abs(y152 - y10));
+  return Math.abs(y14 - y13) / faceH;
+}
+
+/** 处理人脸关键点 → 嘴部状态（带滞回，避免抖动） */
+function processMouthState() {
+  if (!state.faceSeen || !state.faceLandmarks) {
+    state.mouthLabel = "NO FACE";
+    state.mouthState = "closed";
+    state.mouthWasOpened = false;
+    return;
+  }
+  const mar = mouthAspectRatio(state.faceLandmarks);
+  // 平滑
+  state.mar = state.mar === 0 ? mar : state.mar * 0.7 + mar * 0.3;
+
+  // 滞回判断：张嘴阈值高、闭嘴阈值低，中间区间保持原状态，防止嘴唇抖动误判
+  let newState;
+  if (state.mar > CONFIG.MOUTH_OPEN_THRESHOLD) newState = "open";
+  else if (state.mar < CONFIG.MOUTH_CLOSED_THRESHOLD) newState = "closed";
+  else newState = state.mouthState;
+
+  // 状态机：张嘴 → 闭嘴 才算一次有效「吃水果动作」
+  if (newState === "open") state.mouthWasOpened = true;
+  if (newState === "closed" && state.mouthWasOpened) {
+    state.mouthWasOpened = false; // 本次张嘴动作已消耗
+    attemptEatFruit();            // 距离足够近才会真正吃掉
+  }
+
+  state.mouthState = newState;
+  state.mouthLabel = newState === "open" ? "OPEN" : "CLOSED";
+}
+
+/* =====================================================================
+   11. 小鸟移动：手势位移 → 平滑速度 → 带碰撞的移动
+   ===================================================================== */
+function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+function applyDeadZone(v, zone) {
+  const a = Math.abs(v);
+  return a < zone ? 0 : (a - zone) * Math.sign(v);
+}
+
+/** 根据拳头位置变化计算目标速度（仅在有新识别数据时刷新） */
+function updateHandMotion() {
+  if (!state.handSeen || !state.isFist) {
+    // 没有手 / 没有握拳 → 不产生移动，并且下次握拳时重新建立基准
+    state.controlActive = false;
+    hand.baselined = false;
+    hand.tvx = 0;
+    hand.tvy = 0;
+    return;
+  }
+
+  // 没有新的识别数据（AI 30fps、渲染 60fps+）：保持上一帧的目标速度
+  if (!state.handUpdated) return;
+  state.handUpdated = false;
+
+  const raw = palmCenter(state.handLandmarks);
+
+  // 握拳刚出现的第 1 帧：只建立基准，不产生位移（避免瞬移）
+  if (!hand.baselined) {
+    hand.sx = hand.px = raw.x;
+    hand.sy = hand.py = raw.y;
+    hand.baselined = true;
+    state.controlActive = true;
+    return;
+  }
+
+  // 平滑拳头中心（抗抖动）
+  hand.sx += (raw.x - hand.sx) * CONFIG.HAND_SMOOTHING;
+  hand.sy += (raw.y - hand.sy) * CONFIG.HAND_SMOOTHING;
+
+  // 与上一帧比较 → 位移（归一化坐标 / 识别帧）
+  const dx = hand.sx - hand.px;
+  const dy = hand.sy - hand.py;
+  hand.dxRaw = dx;
+  hand.dyRaw = dy;
+
+  // 死区：手轻微抖动时忽略
+  const ddx = applyDeadZone(dx, CONFIG.HAND_DEAD_ZONE);
+  const ddy = applyDeadZone(dy, CONFIG.HAND_DEAD_ZONE);
+
+  // 镜像显示时，屏幕上的左右与摄像头原画面的左右相反，所以水平方向取反
+  const mirrorSign = CONFIG.MIRROR_VIDEO ? -1 : 1;
+
+  // 换算成目标速度（px/s）：位移 × 灵敏度系数，并限速
+  const maxS = CONFIG.BIRD_MAX_SPEED;
+  hand.tvx = clamp(ddx * CONFIG.HAND_SENSITIVITY * mirrorSign, -maxS, maxS);
+  hand.tvy = clamp(ddy * CONFIG.HAND_SENSITIVITY, -maxS, maxS);
+
+  hand.px = hand.sx;
+  hand.py = hand.sy;
+  state.controlActive = true;
+}
+
+/** 更新小鸟位置（含墙壁碰撞检测） */
+function updateBirdMovement(dt) {
+  updateHandMotion();
+
+  if (state.controlActive) {
+    // 有目标速度 → 向目标速度平滑靠拢（每个渲染帧都执行，直到下一次识别刷新）
+    bird.vx += (hand.tvx - bird.vx) * CONFIG.VELOCITY_SMOOTHING;
+    bird.vy += (hand.tvy - bird.vy) * CONFIG.VELOCITY_SMOOTHING;
+  } else {
+    // 未激活控制 → 速度快速衰减到 0
+    const k = Math.pow(0.02, dt); // 极快衰减
+    bird.vx *= k;
+    bird.vy *= k;
+    if (Math.abs(bird.vx) < 0.5) bird.vx = 0;
+    if (Math.abs(bird.vy) < 0.5) bird.vy = 0;
+  }
+
+  // 1. 计算下一帧位置
+  const nx = bird.x + bird.vx * dt;
+  const ny = bird.y + bird.vy * dt;
+
+  // 2. 检测小鸟碰撞范围是否与墙壁重叠
+  if (checkWallCollision(nx, ny)) {
+    // 3. 撞墙 → 立即游戏结束（规则见需求第 6 条）
+    gameOver();
+    return;
+  }
+
+  // 4. 没有碰撞 → 允许移动
+  bird.x = nx;
+  bird.y = ny;
+  bird.x = clamp(bird.x, 20, COLS * CELL - 20);
+  bird.y = clamp(bird.y, 20, ROWS * CELL - 20);
+}
+
+/** 圆形碰撞：检查 (x, y) 处小鸟的包围盒是否压到墙格 */
+function checkWallCollision(x, y) {
+  const r = CONFIG.BIRD_RADIUS;
+  const c0 = Math.floor((x - r) / CELL), c1 = Math.floor((x + r) / CELL);
+  const r0 = Math.floor((y - r) / CELL), r1 = Math.floor((y + r) / CELL);
+  for (let rr = r0; rr <= r1; rr++) {
+    for (let cc = c0; cc <= c1; cc++) {
+      if (isWall(rr, cc)) return true;
+    }
+  }
+  return false;
+}
+
+function isWall(r, c) {
+  if (r < 0 || r >= ROWS || c < 0 || c >= COLS) return true; // 迷宫外视为墙
+  return GRID[r][c] === "#";
+}
+
+/* =====================================================================
+   12. 水果系统
+   ===================================================================== */
+/** 找出小鸟当前距离足够近的未吃水果（没有则返回 null） */
+function checkFruitCollision() {
+  let nearest = null, best = Infinity;
+  for (const f of state.fruits) {
+    if (f.eaten) continue;
+    const d = Math.hypot(bird.x - f.x, bird.y - f.y);
+    if (d < best) { best = d; nearest = f; }
+  }
+  if (nearest && best < CONFIG.EAT_DISTANCE) return nearest;
+  return null;
+}
+
+/** 张嘴→闭嘴 动作触发：距离足够近才真正吃水果 */
+function attemptEatFruit() {
+  if (state.mode !== "PLAYING") return;
+  const f = checkFruitCollision();
+  if (f) eatFruit(f);
+}
+
+function eatFruit(f) {
+  f.eaten = true;
+  f.animT = 1; // 消失动画
+  state.score += 10;
+  updateScoreUI();
+  playSound("eat");
+  spawnFloatText(f.x, f.y - 22, "+10", "#f28c1e");
+  spawnParticles(f.x, f.y, 10, ["#ff6b6b", "#ffd93d", "#ff8a5c", "#7ed957"]);
+  state.chewTimer = 0.45; // 小鸟咀嚼反馈
+}
+
+/** 水果随时间更新（消失动画 / 浮动） */
+function updateFruits(dt) {
+  for (const f of state.fruits) {
+    if (f.animT > 0) f.animT = Math.max(0, f.animT - dt * 3);
+  }
+  if (state.chewTimer > 0) state.chewTimer = Math.max(0, state.chewTimer - dt);
+}
+
+/* =====================================================================
+   13. 游戏流程：开始 / 结束 / 胜利 / 重置
+   ===================================================================== */
+function resetGame() {
+  // 小鸟回到起点格 (1,1) 的中心
+  bird.x = 1 * CELL + CELL / 2;
+  bird.y = 1 * CELL + CELL / 2;
+  bird.vx = 0;
+  bird.vy = 0;
+
+  state.score = 0;
+  state.lives = 1;
+  state.birdDead = false;
+  state.chewTimer = 0;
+  state.shakeTime = 0;
+  state.mouthWasOpened = false;
+  hand.baselined = false;
+
+  // 重新生成水果（8 个位置循环用 5 张贴图）
+  state.fruits = FRUIT_POSITIONS.map(([r, c], i) => ({
+    r, c,
+    x: c * CELL + CELL / 2,
+    y: r * CELL + CELL / 2,
+    imgIdx: i % FRUIT_IMAGES.length,
+    eaten: false,
+    animT: 0,
+    phase: Math.random() * Math.PI * 2,
+  }));
+  state.effects = { particles: [], floatTexts: [] };
+  updateScoreUI();
+}
+
+function gameOver() {
+  if (state.mode !== "PLAYING") return;
+  state.mode = "GAME_OVER";
+  state.birdDead = true;
+  playSound("hit");
+  spawnParticles(bird.x, bird.y, 26, ["#ff6b6b", "#ffd93d", "#ffffff", "#ff8a5c"]);
+  spawnFloatText(bird.x, bird.y - 26, "💥", "#ff4444");
+  state.shakeTime = 0.5; // 屏幕震动
+  overScoreEl.textContent = state.score;
+  setTimeout(() => showOverlay(gameOverScreen), 500);
+}
+
+function winGame() {
+  if (state.mode !== "PLAYING") return;
+  state.mode = "WIN";
+  playSound("win");
+  const ex = EXIT_POS[1] * CELL + CELL / 2;
+  const ey = EXIT_POS[0] * CELL + CELL / 2;
+  for (let i = 0; i < 42; i++) spawnConfetti(ex, ey);
+  winScoreEl.textContent = state.score;
+  setTimeout(() => showOverlay(winScreen), 600);
+}
+
+function checkWin() {
+  const ex = EXIT_POS[1] * CELL + CELL / 2;
+  const ey = EXIT_POS[0] * CELL + CELL / 2;
+  if (Math.hypot(bird.x - ex, bird.y - ey) < CELL * 0.7) winGame();
+}
+
+/** 真正开始一局 */
+function beginGame() {
+  state.waitingForPlayer = false;
+  hideAllOverlays();
+  resetGame();
+  state.mode = "PLAYING";
+}
+
+/** Start Game 点击后的完整流程 */
+async function startFlow() {
+  initAudio();
+  playSound("start");
+  showOverlay(loadingScreen);
+  loadingTitle.textContent = "正在请求摄像头权限…";
+  loadingDetail.textContent = "请在浏览器弹窗中点击「允许」";
+
+  // 1. 摄像头权限
+  const camOk = await initializeCamera();
+  if (!camOk) {
+    hideAllOverlays();
+    showOverlay(permissionScreen);
+    return;
+  }
+  setCamDot("green");
+
+  // 2. AI 模型
+  loadingTitle.textContent = "正在加载 AI 模型…";
+  try {
+    await initializeAI();
+  } catch (e) {
+    hideAllOverlays();
+    showOverlay(permissionScreen);
+    permissionScreen.querySelector("h2").textContent = "Setup Failed";
+    if (location.protocol === "file:") {
+      // 直接双击打开 HTML（file://）会被浏览器拦截本地文件读取
+      permissionScreen.querySelector(".sub").innerHTML =
+        "你正在用 file:// 直接打开页面，浏览器会拦截本地模型文件。<br><br>" +
+        "<b>解决办法：</b>用 VS Code 的 Live Server 打开（右键 index.html → Open with Live Server），<br>" +
+        "浏览器地址必须是 127.0.0.1 开头，不能是 file://";
+    } else {
+      permissionScreen.querySelector(".sub").innerHTML =
+        "AI 模型加载失败。<br>" + escapeHtml(state.aiError) +
+        "<br>请检查：① 两个 .task 模型文件是否和 index.html 放在同一文件夹；② 必须通过 Live Server（localhost）打开页面。";
+    }
+    return;
+  }
+
+  // 3. 等待检测到玩家（挥手 / 露脸）→ 自动开始；6 秒兜底
+  loadingTitle.textContent = "等待检测到玩家…";
+  loadingDetail.textContent = "请对着摄像头露脸或挥手，游戏将自动开始";
+  state.waitingForPlayer = true;
+  state.waitStart = performance.now();
+  state.mode = "WAITING";
+}
+
+/* =====================================================================
+   14. 特效（粒子 / 飘字 / 屏幕震动）
+   ===================================================================== */
+function spawnParticles(x, y, n, colors) {
+  for (let i = 0; i < n; i++) {
+    const ang = Math.random() * Math.PI * 2;
+    const sp = 60 + Math.random() * 160;
+    state.effects.particles.push({
+      x, y,
+      vx: Math.cos(ang) * sp,
+      vy: Math.sin(ang) * sp - 40,
+      life: 1,
+      maxLife: 0.6 + Math.random() * 0.5,
+      color: colors[i % colors.length],
+      size: 3 + Math.random() * 4,
+    });
+  }
+}
+
+function spawnConfetti(x, y) {
+  state.effects.particles.push({
+    x, y,
+    vx: (Math.random() - 0.5) * 300,
+    vy: -100 - Math.random() * 180,
+    life: 1,
+    maxLife: 1 + Math.random() * 0.8,
+    color: ["#ff6b6b", "#ffd93d", "#4ade80", "#60a5fa", "#f472b6"][Math.floor(Math.random() * 5)],
+    size: 3 + Math.random() * 5,
+    isConfetti: true,
+  });
+}
+
+function spawnFloatText(x, y, text, color) {
+  state.effects.floatTexts.push({ x, y, text, color, life: 1 });
+}
+
+function updateEffects(dt) {
+  const p = state.effects.particles;
+  for (let i = p.length - 1; i >= 0; i--) {
+    const it = p[i];
+    it.life -= dt / it.maxLife;
+    it.vy += 320 * dt; // 重力
+    it.x += it.vx * dt;
+    it.y += it.vy * dt;
+    if (it.life <= 0) p.splice(i, 1);
+  }
+  const t = state.effects.floatTexts;
+  for (let i = t.length - 1; i >= 0; i--) {
+    t[i].life -= dt * 1.6;
+    t[i].y -= 34 * dt;
+    if (t[i].life <= 0) t.splice(i, 1);
+  }
+  if (state.shakeTime > 0) state.shakeTime = Math.max(0, state.shakeTime - dt);
+}
+
+/* =====================================================================
+   15. 渲染：迷宫 / 小鸟 / 水果 / 特效
+   ===================================================================== */
+function draw() {
+  ctx.save();
+  if (state.shakeTime > 0) {
+    const mag = state.shakeTime * 16;
+    ctx.translate((Math.random() - 0.5) * mag, (Math.random() - 0.5) * mag);
+  }
+  drawPathBackground();
+  drawWalls();
+  drawStartAndGoal();
+  drawFruits();
+  drawFloatTexts();
+  if (!state.birdDead) drawBird();
+  drawParticles();
+  ctx.restore();
+}
+
+/** 路径底色 + 淡淡棋盘格 */
+function drawPathBackground() {
+  ctx.fillStyle = "#eaf7e2";
+  ctx.fillRect(0, 0, COLS * CELL, ROWS * CELL);
+  ctx.fillStyle = "rgba(0,0,0,0.02)";
+  for (let r = 0; r < ROWS; r++) {
+    for (let c = 0; c < COLS; c++) {
+      if (!isWall(r, c) && (r + c) % 2 === 0) {
+        ctx.fillRect(c * CELL, r * CELL, CELL, CELL);
+      }
+    }
+  }
+  ctx.strokeStyle = "rgba(0,0,0,0.04)";
+  ctx.lineWidth = 1;
+  for (let i = 0; i <= COLS; i++) {
+    ctx.beginPath(); ctx.moveTo(i * CELL, 0); ctx.lineTo(i * CELL, ROWS * CELL); ctx.stroke();
+  }
+  for (let i = 0; i <= ROWS; i++) {
+    ctx.beginPath(); ctx.moveTo(0, i * CELL); ctx.lineTo(COLS * CELL, i * CELL); ctx.stroke();
+  }
+}
+
+/** 墙壁：圆角深绿方块 */
+function drawWalls() {
+  for (let r = 0; r < ROWS; r++) {
+    for (let c = 0; c < COLS; c++) {
+      if (!isWall(r, c)) continue;
+      const x = c * CELL + 1, y = r * CELL + 1, s = CELL - 2;
+      const g = ctx.createLinearGradient(x, y, x, y + s);
+      g.addColorStop(0, "#3c8f5f");
+      g.addColorStop(1, "#1f5f3a");
+      ctx.fillStyle = g;
+      roundRect(ctx, x, y, s, s, 7);
+      ctx.fill();
+      ctx.strokeStyle = "rgba(0,0,0,0.18)";
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+    }
+  }
+}
+
+function roundRect(c, x, y, w, h, r) {
+  c.beginPath();
+  c.moveTo(x + r, y);
+  c.arcTo(x + w, y, x + w, y + h, r);
+  c.arcTo(x + w, y + h, x, y + h, r);
+  c.arcTo(x, y + h, x, y, r);
+  c.arcTo(x, y, x + w, y, r);
+  c.closePath();
+}
+
+/** 起点木牌 + 出口旗帜 */
+function drawStartAndGoal() {
+  // 起点 (1,1)：小木牌
+  const sx = 1 * CELL + CELL / 2, sy = 1 * CELL + CELL / 2;
+  ctx.fillStyle = "#8b5a2b";
+  roundRect(ctx, sx - 14, sy - 26, 28, 20, 6);
+  ctx.fill();
+  ctx.strokeStyle = "#5d3a17";
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+  ctx.fillStyle = "#fff8e7";
+  ctx.font = "700 10px 'Baloo 2', sans-serif";
+  ctx.textAlign = "center";
+  ctx.fillText("START", sx, sy - 12);
+  ctx.fillStyle = "#5d3a17";
+  ctx.fillRect(sx - 2, sy - 8, 4, 10);
+
+  // 出口 (13,19)：旗帜 + 呼吸光圈
+  const ex = EXIT_POS[1] * CELL + CELL / 2, ey = EXIT_POS[0] * CELL + CELL / 2;
+  const t = performance.now() / 1000;
+  const pulse = 0.5 + 0.5 * Math.sin(t * 4);
+  ctx.strokeStyle = `rgba(74,222,128,${0.35 + pulse * 0.4})`;
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.arc(ex, ey, 20 + pulse * 4, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.font = "24px sans-serif";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText("🚩", ex, ey);
+  ctx.font = "700 11px 'Baloo 2', sans-serif";
+  ctx.fillStyle = "#2e7d32";
+  ctx.fillText("GOAL", ex, ey + 26);
+  ctx.textBaseline = "alphabetic";
+}
+
+/** 水果：贴图 + 阴影 + 靠近光圈 + 消失动画 */
+function drawFruits() {
+  const t = performance.now() / 1000;
+  for (const f of state.fruits) {
+    if (f.eaten && f.animT <= 0) continue;
+
+    // 靠近提示光圈
+    const near = checkFruitCollision();
+    if (!f.eaten && near === f) {
+      const pulse = 0.5 + 0.5 * Math.sin(t * 6);
+      ctx.strokeStyle = `rgba(242,140,30,${0.5 + pulse * 0.5})`;
+      ctx.lineWidth = 2.5;
+      ctx.beginPath();
+      ctx.arc(f.x, f.y, 20 + pulse * 3, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+
+    ctx.save();
+    ctx.globalAlpha = f.eaten ? Math.max(0, f.animT) : 1;
+    // 阴影
+    ctx.fillStyle = "rgba(0,0,0,0.12)";
+    ctx.beginPath();
+    ctx.ellipse(f.x, f.y + 14, 10, 4, 0, 0, Math.PI * 2);
+    ctx.fill();
+    // 水果上下浮动（贴图）
+    const bob = f.eaten ? 0 : Math.sin(t * 2.5 + f.phase) * 3;
+    const im = FRUIT_IMAGES[f.imgIdx];
+    const s = CELL * 0.85;
+    if (im && im.complete && im.naturalWidth > 0) {
+      ctx.drawImage(im, f.x - s / 2, f.y + bob - s / 2, s, s);
+    } else {
+      // 图片未加载完时的兜底：橙色圆
+      ctx.fillStyle = "#f28c1e";
+      ctx.beginPath();
+      ctx.arc(f.x, f.y + bob, 11, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+}
+
+function drawFloatTexts() {
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  for (const ft of state.effects.floatTexts) {
+    ctx.globalAlpha = Math.max(0, ft.life);
+    ctx.font = "800 22px 'Baloo 2', sans-serif";
+    ctx.strokeStyle = "rgba(0,0,0,0.35)";
+    ctx.lineWidth = 4;
+    ctx.strokeText(ft.text, ft.x, ft.y);
+    ctx.fillStyle = ft.color;
+    ctx.fillText(ft.text, ft.x, ft.y);
+  }
+  ctx.globalAlpha = 1;
+}
+
+function drawParticles() {
+  for (const it of state.effects.particles) {
+    ctx.globalAlpha = Math.max(0, it.life);
+    ctx.fillStyle = it.color;
+    ctx.save();
+    ctx.translate(it.x, it.y);
+    if (it.isConfetti) {
+      ctx.rotate(it.life * 8);
+      ctx.fillRect(-it.size / 2, -it.size / 2, it.size, it.size * 1.6);
+    } else {
+      ctx.beginPath();
+      ctx.arc(0, 0, it.size, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+  ctx.globalAlpha = 1;
+}
+
+/** 小鸟贴图（fly R.webp），带轻微上下浮动和左右倾斜 */
+function drawBird() {
+  const t = performance.now() / 1000;
+  const speed = Math.hypot(bird.vx, bird.vy);
+  const tilt = clamp(bird.vx * 0.0018, -0.4, 0.4);   // 左右倾斜
+  const bob = Math.sin(t * 8) * (2 + Math.min(1, speed / 130) * 3); // 飞行上下浮动
+
+  ctx.save();
+  ctx.translate(bird.x, bird.y + bob * 0.3);
+  ctx.rotate(tilt);
+
+  if (birdImg.complete && birdImg.naturalWidth > 0) {
+    // 贴图大小约 1.2 格，居中绘制
+    const s = CELL * 1.1;
+    ctx.drawImage(birdImg, -s / 2, -s / 2, s, s);
+  } else {
+    // 图片还没加载完时的兜底：黄色圆
+    ctx.fillStyle = "#ffc94d";
+    ctx.beginPath();
+    ctx.arc(0, 0, 14, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  ctx.restore();
+}
+
+/* =====================================================================
+   16. 摄像头面板渲染（画面 + 关键点 + 识别状态）
+   ===================================================================== */
+/** 把归一化关键点映射到摄像头画布坐标（跟随镜像设置） */
+function mapPoint(p) {
+  return {
+    x: CONFIG.MIRROR_VIDEO ? (1 - p.x) * CAM_W : p.x * CAM_W,
+    y: p.y * CAM_H,
+  };
+}
+
+const HAND_CONNECTIONS = [
+  [0, 1], [1, 2], [2, 3], [3, 4],
+  [0, 5], [5, 6], [6, 7], [7, 8],
+  [5, 9], [9, 10], [10, 11], [11, 12],
+  [9, 13], [13, 14], [14, 15], [15, 16],
+  [13, 17], [17, 18], [18, 19], [19, 20],
+  [0, 17],
+];
+
+function drawCameraOverlay() {
+  camCtx.clearRect(0, 0, CAM_W, CAM_H);
   if (video.readyState >= 2) {
     camCtx.save();
-    camCtx.translate(camCanvas.width, 0);
-    camCtx.scale(-1, 1);
-    camCtx.drawImage(video, 0, 0, camCanvas.width, camCanvas.height);
+    if (CONFIG.MIRROR_VIDEO) {
+      camCtx.translate(CAM_W, 0);
+      camCtx.scale(-1, 1);
+    }
+    camCtx.drawImage(video, 0, 0, CAM_W, CAM_H);
     camCtx.restore();
   }
-  requestAnimationFrame(drawCameraPreview);
+
+  // 手部关键点
+  if (state.handSeen && state.handLandmarks) {
+    camCtx.strokeStyle = "rgba(74,222,128,0.9)";
+    camCtx.lineWidth = 2;
+    for (const [a, b] of HAND_CONNECTIONS) {
+      const pa = mapPoint(state.handLandmarks[a]);
+      const pb = mapPoint(state.handLandmarks[b]);
+      camCtx.beginPath();
+      camCtx.moveTo(pa.x, pa.y);
+      camCtx.lineTo(pb.x, pb.y);
+      camCtx.stroke();
+    }
+    camCtx.fillStyle = "#4ade80";
+    for (const p of state.handLandmarks) {
+      const m = mapPoint(p);
+      camCtx.beginPath();
+      camCtx.arc(m.x, m.y, 2.4, 0, Math.PI * 2);
+      camCtx.fill();
+    }
+    // 拳头中心标记
+    const pc = mapPoint(palmCenter(state.handLandmarks));
+    camCtx.strokeStyle = "#ffd93d";
+    camCtx.lineWidth = 2;
+    camCtx.beginPath();
+    camCtx.arc(pc.x, pc.y, 7, 0, Math.PI * 2);
+    camCtx.stroke();
+  }
+
+  // 人脸关键点（全部点淡淡显示 + 嘴唇高亮）
+  if (state.faceSeen && state.faceLandmarks) {
+    const flm = state.faceLandmarks;
+    camCtx.fillStyle = "rgba(96,165,250,0.35)";
+    for (const p of flm) {
+      const m = mapPoint(p);
+      camCtx.fillRect(m.x, m.y, 1.6, 1.6);
+    }
+    // 嘴唇轮廓高亮（橙色）
+    const lipRing = [61,146,91,181,84,17,314,405,321,375,291,409,270,269,267,0,37,39,40,185,
+                     78,191,80,81,82,13,312,311,310,415,308,324,318,402,317,14,87,178,88,95];
+    camCtx.strokeStyle = "#ff8a5c";
+    camCtx.lineWidth = 2;
+    camCtx.beginPath();
+    lipRing.forEach((idx, i) => {
+      const m = mapPoint(flm[idx]);
+      if (i === 0) camCtx.moveTo(m.x, m.y);
+      else camCtx.lineTo(m.x, m.y);
+    });
+    camCtx.closePath();
+    camCtx.stroke();
+    // 上下唇参考点 13 / 14
+    for (const idx of [13, 14]) {
+      const m = mapPoint(flm[idx]);
+      camCtx.fillStyle = "#ff4444";
+      camCtx.beginPath();
+      camCtx.arc(m.x, m.y, 3.5, 0, Math.PI * 2);
+      camCtx.fill();
+    }
+  }
+
+  drawCamStatusText();
 }
-document.getElementById("reloadBtn").addEventListener("click", () => location.reload());
-drawCameraPreview();
+
+function drawCamStatusText() {
+  const top = state.isFist ? "✊ FIST" : state.handSeen ? "🖐 " + state.gestureLabel : "— no hand —";
+  camCtx.font = "700 14px 'Baloo 2', sans-serif";
+  camCtx.textAlign = "left";
+  camCtx.lineWidth = 4;
+  camCtx.strokeStyle = "rgba(0,0,0,0.6)";
+  camCtx.strokeText(top, 8, 20);
+  camCtx.fillStyle = state.isFist ? "#7ef29a" : "#ffffff";
+  camCtx.fillText(top, 8, 20);
+
+  const bottom = state.faceSeen
+    ? (state.mouthState === "open" ? "😮 MOUTH OPEN" : "😐 MOUTH CLOSED")
+    : "— no face —";
+  camCtx.strokeText(bottom, 8, CAM_H - 10);
+  camCtx.fillStyle = state.mouthState === "open" ? "#ffd93d" : "#ffffff";
+  camCtx.fillText(bottom, 8, CAM_H - 10);
+}
+
+/* =====================================================================
+   17. 主循环
+   ===================================================================== */
+let lastTs = 0;
+let trackAcc = 0;
+let fpsFrames = 0, fpsTime = 0, fps = 0;
+
+function gameLoop(ts) {
+  requestAnimationFrame(gameLoop);
+
+  const dt = lastTs ? Math.min(0.05, (ts - lastTs) / 1000) : 0.016;
+  lastTs = ts;
+
+  // FPS 统计
+  fpsFrames++; fpsTime += dt;
+  if (fpsTime >= 0.5) { fps = Math.round(fpsFrames / fpsTime); fpsFrames = 0; fpsTime = 0; }
+
+  // AI 识别（按 TRACK_FPS 节流）
+  trackAcc += dt * 1000;
+  if (state.cameraOk && state.aiReady && trackAcc >= 1000 / CONFIG.TRACK_FPS) {
+    trackAcc = 0;
+    runTracking();
+  }
+
+  // 等待玩家 → 自动开始（检测到手/脸立即开始，6 秒兜底）
+  if (state.waitingForPlayer) {
+    if (state.handSeen || state.faceSeen) beginGame();
+    else if (ts - state.waitStart > 6000) beginGame();
+  }
+
+  // 游戏逻辑
+  if (state.mode === "PLAYING") {
+    updateBirdMovement(dt);
+    updateFruits(dt);
+    checkWin();
+  }
+  updateEffects(dt);
+
+  // 渲染
+  draw();
+  drawCameraOverlay();
+  updateStatusUI();
+}
+
+/** 执行一次手势 + 人脸识别 */
+function runTracking() {
+  if (!state.cameraOk || !state.aiReady || video.readyState < 2) return;
+  try {
+    const now = performance.now();
+    const gRes = gestureRecognizer.recognizeForVideo(video, now);
+    detectFist(gRes);
+    state.handUpdated = true; // 标记新的手部数据已到达，供 updateHandMotion 消费
+    const fRes = faceLandmarker.detectForVideo(video, now);
+    state.faceSeen = fRes.faceLandmarks && fRes.faceLandmarks.length > 0;
+    state.faceLandmarks = state.faceSeen ? fRes.faceLandmarks[0] : null;
+    processMouthState();
+  } catch (e) {
+    // 偶发识别异常不影响主循环
+    console.warn("识别失败:", e);
+  }
+}
+
+/* =====================================================================
+   18. UI 更新与事件绑定
+   ===================================================================== */
+function updateScoreUI() {
+  scoreEl.textContent = state.score;
+}
+
+function showOverlay(el) { el.classList.remove("hidden"); }
+function hideAllOverlays() {
+  for (const el of [menuScreen, loadingScreen, permissionScreen, gameOverScreen, winScreen]) {
+    el.classList.add("hidden");
+  }
+}
+
+function showMenu() {
+  hideAllOverlays();
+  showOverlay(menuScreen);
+  state.mode = "MENU";
+}
+
+function setCamDot(cls) {
+  camStatusDot.className = "dot " + cls;
+}
+
+function updateStatusUI() {
+  chipCam.textContent = "Camera: " + state.camStatus;
+  chipCam.className = "chip " + (state.cameraOk ? "ok" : state.camStatus === "--" ? "" : "bad");
+  chipAi.textContent = "AI: " + (state.aiReady ? "READY" : state.aiError ? "FAILED" : "LOADING");
+  chipAi.className = "chip " + (state.aiReady ? "ok" : state.aiError ? "bad" : "warn");
+  chipHand.textContent = "Hand: " + (state.handSeen ? "YES" : "NO");
+  chipHand.className = "chip " + (state.handSeen ? "ok" : "bad");
+  chipGesture.textContent = "Gesture: " + state.gestureLabel;
+  chipGesture.className = "chip " + (state.isFist ? "ok" : state.handSeen ? "warn" : "bad");
+  chipMouth.textContent = "Mouth: " + state.mouthLabel;
+  chipMouth.className = "chip " +
+    (state.mouthState === "open" ? "warn" : state.faceSeen ? "ok" : "bad");
+  chipControl.textContent = "Control: " + (state.controlActive ? "ACTIVE" : "INACTIVE");
+  chipControl.className = "chip " + (state.controlActive ? "ok" : "");
+  camStatusText.textContent = "Camera: " + state.camStatus;
+
+  debugLine.textContent =
+    `MAR:${state.mar.toFixed(3)}  HandΔ:(${hand.dxRaw.toFixed(3)},${hand.dyRaw.toFixed(3)})` +
+    `  Bird:(${Math.round(bird.x)},${Math.round(bird.y)})  Speed:${Math.round(Math.hypot(bird.vx, bird.vy))}px/s` +
+    `  FPS:${fps}  State:${state.mode}`;
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+}
+
+/* ---- 事件绑定 ---- */
+$("startBtn").addEventListener("click", startFlow);
+$("reloadBtn").addEventListener("click", () => location.reload());
+$("retryBtn").addEventListener("click", beginGame);
+$("winRetryBtn").addEventListener("click", beginGame);
+
+// 点击摄像头面板：显示/隐藏
+$("toggleCameraBtn").addEventListener("click", () => {
+  cameraPanel.classList.toggle("hidden");
+});
+
+/* =====================================================================
+   19. 启动
+   ===================================================================== */
+// 预加载：摄像头权限与 AI 模型放在点击 Start 之后（浏览器要求用户手势才能
+// 播放声音与获取摄像头，属于正常浏览器安全策略）。
+showMenu();
+resetGame();
+requestAnimationFrame(gameLoop);

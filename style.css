@@ -1,28 +1,389 @@
-* { margin: 0; padding: 0; box-sizing: border-box; }
-body {
-  font-family: "Baloo 2", "Microsoft YaHei", sans-serif;
-  background: linear-gradient(160deg, #1b4332, #2d6a4f);
-  min-height: 100vh; color: #2d3a2e;
+/* =========================================================
+   Bird Maze — 界面样式（可爱森林风）
+   ========================================================= */
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
 }
-#app { max-width: 960px; margin: 0 auto; padding: 16px; }
-.top-bar { display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; }
-.logo { color: #fff; font-size: 28px; font-weight: 800; }
-.hud { display: flex; gap: 10px; }
-.hud-item { background: rgba(255,255,255,0.9); border-radius: 999px; padding: 8px 18px; font-weight: 700; }
-.hud-score span { color: #e8751a; }
-.hud-lives span { color: #2f9e44; }
-.game-area { position: relative; background: #eaf7e2; border-radius: 18px; overflow: hidden; box-shadow: 0 10px 30px rgba(0,0,0,0.3); }
-#gameCanvas { display: block; margin: 0 auto; }
-.overlay { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,0.35); }
-.card { background: #fdf6e3; border-radius: 24px; padding: 36px 48px; text-align: center; box-shadow: 0 12px 40px rgba(0,0,0,0.35); }
-.card-emoji { font-size: 56px; }
-.card h2 { color: #2d6a4f; font-size: 40px; margin: 8px 0; }
-.sub { color: #6b7a6b; margin: 10px 0 22px; line-height: 1.6; }
-.btn-primary { font-family: inherit; font-size: 20px; font-weight: 700; color: #fff; background: #f59f00; border: none; border-radius: 999px; padding: 14px 34px; cursor: pointer; box-shadow: 0 4px 0 #c67d00; }
-.btn-primary:active { transform: translateY(2px); box-shadow: 0 2px 0 #c67d00; }
-.hidden { display: none; }
-.final-score { color: #e8751a; font-size: 26px; font-weight: 800; margin-bottom: 20px; }
-.camera-panel { width: 230px; background: rgba(20,32,24,0.88); border: 2px solid rgba(255,255,255,0.35); border-radius: 14px; overflow: hidden; }
-.camera-panel canvas { display: block; width: 100%; }
-.cam-bar { color: #fff; font-size: 13px; padding: 5px 10px; text-align: center; }
-#camVideo { display: none; }
+
+html, body {
+  height: 100%;
+}
+
+body {
+  font-family: "Baloo 2", "Comic Sans MS", "Chalkboard SE", "PingFang SC",
+    "Microsoft YaHei", sans-serif;
+  background: linear-gradient(165deg, #0c3b2e 0%, #15604a 45%, #1f8a63 100%);
+  color: #2c3e2f;
+  display: flex;
+  justify-content: center;
+  padding: 16px 12px 24px;
+  min-height: 100vh;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* 隐藏的摄像头视频源 */
+#camVideo {
+  display: none;
+}
+
+#app {
+  width: 100%;
+  max-width: 940px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* ===================== 顶部栏 ===================== */
+.top-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.logo {
+  font-size: 30px;
+  font-weight: 800;
+  color: #fff8e7;
+  text-shadow: 0 3px 0 rgba(0, 0, 0, 0.25), 0 6px 18px rgba(0, 0, 0, 0.3);
+  letter-spacing: 1px;
+}
+
+.hud {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.hud-item {
+  background: rgba(255, 250, 235, 0.95);
+  border-radius: 999px;
+  padding: 6px 16px;
+  font-weight: 700;
+  font-size: 15px;
+  box-shadow: 0 3px 8px rgba(0, 0, 0, 0.18);
+}
+
+.hud-score span {
+  color: #d2691e;
+  font-size: 18px;
+}
+
+.hud-lives span {
+  color: #2e7d32;
+  font-size: 18px;
+}
+
+/* ===================== 按钮 ===================== */
+.btn-primary {
+  font-family: inherit;
+  font-size: 18px;
+  font-weight: 800;
+  color: #fff;
+  background: linear-gradient(180deg, #ffb347, #f28c1e);
+  border: none;
+  border-radius: 999px;
+  padding: 12px 34px;
+  cursor: pointer;
+  box-shadow: 0 5px 0 #c96a0c, 0 8px 18px rgba(0, 0, 0, 0.25);
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
+}
+
+.btn-primary:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 7px 0 #c96a0c, 0 12px 22px rgba(0, 0, 0, 0.3);
+}
+
+.btn-primary:active {
+  transform: translateY(2px);
+  box-shadow: 0 2px 0 #c96a0c;
+}
+
+.btn-ghost {
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 700;
+  color: #5b4632;
+  background: rgba(255, 250, 235, 0.9);
+  border: 2px solid rgba(91, 70, 50, 0.25);
+  border-radius: 999px;
+  padding: 6px 14px;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.btn-ghost:hover {
+  background: #fff8e7;
+}
+
+/* ===================== 游戏主区域 ===================== */
+.game-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.game-area {
+  position: relative;
+  border-radius: 18px;
+  overflow: hidden;
+  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.4);
+  background: #eaf7e2;
+}
+
+#gameCanvas {
+  display: block;
+  width: 100%;
+  height: auto;
+  background: #eaf7e2;
+}
+
+/* 摄像头面板：标题行正中间，跟随布局，不遮挡迷宫 */
+.camera-panel {
+  position: static;
+  width: 230px;
+  flex: 0 0 auto;
+  background: rgba(20, 32, 24, 0.88);
+  border: 2px solid rgba(255, 255, 255, 0.35);
+  border-radius: 14px;
+  overflow: hidden;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  cursor: pointer;
+  z-index: 20;
+  transition: opacity 0.2s ease;
+}
+
+.camera-panel.hidden {
+  opacity: 0;
+  pointer-events: none;
+}
+
+#cameraCanvas {
+  display: block;
+  width: 100%;
+  height: auto;
+  background: #0d1510;
+}
+
+.cam-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  font-size: 12px;
+  font-weight: 700;
+  color: #e9f5e4;
+}
+
+.dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  display: inline-block;
+  flex: 0 0 auto;
+}
+
+.dot-gray { background: #9aa7a0; }
+.dot-green { background: #4ade80; box-shadow: 0 0 8px #4ade80; }
+.dot-red { background: #f87171; box-shadow: 0 0 8px #f87171; }
+.dot-yellow { background: #facc15; box-shadow: 0 0 8px #facc15; }
+
+/* ===================== 遮罩层（开始 / 结束 / 胜利） ===================== */
+.overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(8, 30, 22, 0.66);
+  backdrop-filter: blur(3px);
+  -webkit-backdrop-filter: blur(3px);
+}
+
+.overlay.hidden {
+  display: none;
+}
+
+.card {
+  background: linear-gradient(180deg, #fffaf0, #fdf3dd);
+  border-radius: 22px;
+  padding: 30px 38px;
+  max-width: 460px;
+  width: 92%;
+  text-align: center;
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.45);
+  border: 3px solid #fff;
+}
+
+.card-emoji {
+  font-size: 52px;
+  line-height: 1;
+  margin-bottom: 6px;
+}
+
+.card h2 {
+  font-size: 34px;
+  font-weight: 800;
+  color: #3d5a2f;
+  letter-spacing: 2px;
+  margin-bottom: 8px;
+}
+
+.card .sub {
+  font-size: 15px;
+  color: #6b5a44;
+  line-height: 1.6;
+  margin-bottom: 14px;
+}
+
+.card .warn {
+  font-size: 13px;
+  color: #b3541e;
+  margin: 10px 0 14px;
+}
+
+.final-score {
+  font-size: 22px;
+  font-weight: 800;
+  color: #d2691e;
+  margin: 8px 0 14px;
+}
+
+.card .btn-primary {
+  margin-top: 4px;
+}
+
+.card .btn-ghost {
+  margin-left: 10px;
+}
+
+/* 手势说明 */
+.gesture-guide {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  text-align: left;
+  margin: 6px 0 4px;
+}
+
+.guide-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: rgba(255, 255, 255, 0.75);
+  border: 2px dashed #c8b98f;
+  border-radius: 14px;
+  padding: 10px 14px;
+}
+
+.guide-emoji {
+  font-size: 30px;
+  flex: 0 0 auto;
+}
+
+.guide-img {
+  width: 64px;
+  height: 64px;
+  object-fit: cover;
+  border-radius: 12px;
+  border: 2px solid #e3d5b8;
+  flex: 0 0 auto;
+  background: #fff;
+}
+
+.guide-item b {
+  display: block;
+  color: #3d5a2f;
+  font-size: 15px;
+}
+
+.guide-item small {
+  color: #7a6a52;
+  font-size: 12.5px;
+}
+
+/* 加载动画 */
+.spinner {
+  width: 46px;
+  height: 46px;
+  margin: 0 auto 14px;
+  border: 5px solid #e4d5b0;
+  border-top-color: #f28c1e;
+  border-radius: 50%;
+  animation: spin 0.9s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* ===================== 状态栏 ===================== */
+.status-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.chip {
+  font-size: 13px;
+  font-weight: 700;
+  background: rgba(255, 250, 235, 0.94);
+  border-radius: 999px;
+  padding: 6px 14px;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.16);
+  transition: background 0.2s ease, color 0.2s ease;
+}
+
+.chip.ok {
+  background: #c9f2cf;
+  color: #1d6b27;
+}
+
+.chip.warn {
+  background: #fdeec4;
+  color: #8a5a00;
+}
+
+.chip.bad {
+  background: #fcd9d9;
+  color: #a02c2c;
+}
+
+.debug-line {
+  font-size: 12px;
+  color: #d9f2e3;
+  font-family: Consolas, Menlo, monospace;
+  min-height: 16px;
+  opacity: 0.85;
+  white-space: nowrap;
+  overflow-x: auto;
+}
+
+.foot {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.72);
+  text-align: center;
+}
+
+.foot code {
+  background: rgba(0, 0, 0, 0.25);
+  padding: 1px 6px;
+  border-radius: 6px;
+}
+
+/* ===================== 窄屏适配 ===================== */
+@media (max-width: 640px) {
+  .camera-panel {
+    width: 200px;
+  }
+  .card {
+    padding: 22px 18px;
+  }
+}

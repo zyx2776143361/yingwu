@@ -1,54 +1,169 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="zh-CN">
 <head>
   <meta charset="UTF-8">
-  <title>Bird Maze</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>🐦 Bird Maze — 摄像头手势控制小鸟迷宫</title>
+  <link rel="icon" href="data:,">
+
+  <!-- 可爱卡通字体（离线时自动回退到系统字体） -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Baloo+2:wght@500;700;800&display=swap" rel="stylesheet">
+
+  <!--
+    MediaPipe Tasks Vision（浏览器端 AI 视觉识别库）
+    三级回退（参照老师 10.16 项目的国内网络方案）：
+    本地 assets/lib/ → 国内镜像 npmmirror → jsdelivr。
+    动态 import：前一个失败就试下一个，全都失败时把错误挂到 window.__mpError。
+  -->
+  <script type="module">
+    (async () => {
+      const sources = [
+        "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs",
+        "https://unpkg.com/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs",
+        "https://registry.npmmirror.com/@mediapipe/tasks-vision/0.10.14/files/vision_bundle.mjs"
+      ];
+      for (const u of sources) {
+        try {
+          window.__mp = await import(u);
+          break;
+        } catch (e) {
+          console.warn("运行库加载失败，换下一个来源:", u, e);
+        }
+      }
+      if (!window.__mp) {
+        window.__mpError = "本地/npmmirror/jsdelivr 三个来源都加载失败";
+      }
+    })();
+  </script>
+
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
+
   <div id="app">
+
+    <!-- ===================== 顶部栏 ===================== -->
     <header class="top-bar">
       <h1 class="logo">🐦 BIRD MAZE</h1>
+
+      <!-- 摄像头 + AI 识别画面（放在标题行正中间，不挡迷宫） -->
       <div id="cameraPanel" class="camera-panel">
         <canvas id="cameraCanvas" width="320" height="240"></canvas>
-        <div class="cam-bar"><span id="camStatusText">Camera: --</span></div>
+        <div class="cam-bar">
+          <span id="camStatusDot" class="dot dot-gray"></span>
+          <span id="camStatusText">Camera: --</span>
+        </div>
       </div>
+
       <div class="hud">
+        <button id="toggleCameraBtn" class="btn-ghost" title="显示 / 隐藏摄像头画面">📷 摄像头</button>
         <div class="hud-item hud-score">Score&nbsp;<span id="score">0</span></div>
         <div class="hud-item hud-lives">Lives&nbsp;<span id="lives">1</span></div>
       </div>
     </header>
-  <div id="permissionScreen" class="overlay hidden">
-    <div class="card">
-      <div class="card-emoji">🚫</div>
-      <h2>Camera Permission Needed</h2>
-      <p class="sub">请允许摄像头权限后刷新。<br>必须用 Live Server 打开，不能双击 HTML。</p>
-      <button id="reloadBtn" class="btn-primary">🔄 Reload Page</button>
-    </div>
-  </div>
-  <video id="camVideo" autoplay playsinline muted></video>
+
+    <!-- ===================== 游戏主区域 ===================== -->
     <main class="game-wrap">
       <div id="gameArea" class="game-area">
+        <!-- 迷宫画布 -->
         <canvas id="gameCanvas" width="880" height="600"></canvas>
+
+        <!-- ============ 开始界面 ============ -->
         <div id="menuScreen" class="overlay">
           <div class="card">
+            <div class="card-emoji">🐦</div>
             <h2>BIRD MAZE</h2>
             <p class="sub">Control the bird with your fist.<br>Eat fruit by opening and closing your mouth.</p>
+
+            <div class="gesture-guide">
+              <div class="guide-item">
+                <img class="guide-img" src="https://res.cloudinary.com/kjd0jh3m/image/upload/v1792315521/fist.webp" alt="握拳姿势" onerror="this.style.display='none'">
+                <div>
+                  <b>握拳 ✊</b>
+                  <small>拳头正对摄像头，五指收拢<br>握拳后移动手掌 → 小鸟跟着移动</small>
+                </div>
+              </div>
+              <div class="guide-item">
+                <img class="guide-img" src="https://res.cloudinary.com/kjd0jh3m/image/upload/v1792315521/mouth_open.webp" alt="张嘴姿势" onerror="this.style.display='none'">
+                <div>
+                  <b>张嘴 → 闭嘴 😮→😐</b>
+                  <small>靠近水果后张嘴再闭嘴 = 吃水果</small>
+                </div>
+              </div>
+            </div>
+
+            <p class="warn">需要摄像头权限，请确保浏览器允许使用摄像头。</p>
             <button id="startBtn" class="btn-primary">▶ Start Game</button>
           </div>
         </div>
+
+        <!-- ============ 加载 / 等待玩家 ============ -->
+        <div id="loadingScreen" class="overlay hidden">
+          <div class="card">
+            <div class="spinner"></div>
+            <h2 id="loadingTitle">正在加载 AI 模型…</h2>
+            <p id="loadingDetail" class="sub">请稍候</p>
+          </div>
+        </div>
+
+        <!-- ============ 摄像头权限被拒绝 ============ -->
+        <div id="permissionScreen" class="overlay hidden">
+          <div class="card">
+            <div class="card-emoji">🚫</div>
+            <h2>Camera Permission Needed</h2>
+            <p class="sub">
+              Camera permission is required to play this game.<br>
+              Please allow camera access and reload the page.
+            </p>
+            <button id="reloadBtn" class="btn-primary">🔄 Reload Page</button>
+          </div>
+        </div>
+
+        <!-- ============ 游戏结束 ============ -->
+        <div id="gameOverScreen" class="overlay hidden">
+          <div class="card">
+            <div class="card-emoji">💥</div>
+            <h2>GAME OVER</h2>
+            <p class="sub">The bird hit the wall!</p>
+            <p class="final-score">Score: <span id="overScore">0</span></p>
+            <button id="retryBtn" class="btn-primary">🔄 Play Again</button>
+          </div>
+        </div>
+
+        <!-- ============ 胜利 ============ -->
+        <div id="winScreen" class="overlay hidden">
+          <div class="card">
+            <div class="card-emoji">🎉</div>
+            <h2>YOU WIN!</h2>
+            <p class="sub">You escaped the maze!</p>
+            <p class="final-score">Score: <span id="winScore">0</span></p>
+            <button id="winRetryBtn" class="btn-primary">🔄 Play Again</button>
+          </div>
+        </div>
       </div>
+
+      <!-- ===================== 状态栏 ===================== -->
+      <div class="status-bar">
+        <span class="chip" id="chipCam">Camera: --</span>
+        <span class="chip" id="chipAi">AI: --</span>
+        <span class="chip" id="chipHand">Hand: NO</span>
+        <span class="chip" id="chipGesture">Gesture: NONE</span>
+        <span class="chip" id="chipMouth">Mouth: --</span>
+        <span class="chip" id="chipControl">Control: INACTIVE</span>
+      </div>
+      <div id="debugLine" class="debug-line"></div>
     </main>
-    <div id="gameOverScreen" class="overlay hidden">
-  <div class="card">
-    <div class="card-emoji">💥</div>
-    <h2>GAME OVER</h2>
-    <p class="sub">The bird hit the wall!</p>
-    <button id="retryBtn" class="btn-primary">🔄 Play Again</button>
-    <p class="final-score">Score: <span id="overScore">0</span></p>
+
+    <footer class="foot">
+      AI: MediaPipe Gesture Recognizer (<code>gesture_recognizer.task</code>) + Face Landmarker — 画面全程本地处理，不上传服务器
+    </footer>
   </div>
-</div>
-  </div>
+
+  <!-- 摄像头视频源（隐藏，只作为 AI 输入） -->
+  <video id="camVideo" autoplay playsinline muted></video>
+
   <script src="script.js"></script>
 </body>
 </html>
+
