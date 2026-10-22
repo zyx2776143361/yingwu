@@ -12,8 +12,7 @@
 
   <!--
     MediaPipe Tasks Vision（浏览器端 AI 视觉识别库）
-    三级回退（参照老师 10.16 项目的国内网络方案）：
-    本地 assets/lib/ → 国内镜像 npmmirror → jsdelivr。
+    三级 CDN 回退：jsdelivr → unpkg → npmmirror。
     动态 import：前一个失败就试下一个，全都失败时把错误挂到 window.__mpError。
   -->
   <script type="module">
@@ -32,7 +31,7 @@
         }
       }
       if (!window.__mp) {
-        window.__mpError = "本地/npmmirror/jsdelivr 三个来源都加载失败";
+        window.__mpError = "jsdelivr / unpkg / npmmirror 三个来源都加载失败";
       }
     })();
   </script>
@@ -57,7 +56,7 @@
       </div>
 
       <div class="hud">
-        <button id="toggleCameraBtn" class="btn-ghost" title="显示 / 隐藏摄像头画面">📷 摄像头</button>
+        <button id="toggleCameraBtn" class="btn-ghost" aria-controls="cameraPanel" aria-expanded="true" title="显示 / 隐藏摄像头画面">📷 摄像头</button>
         <div class="hud-item hud-score">Score&nbsp;<span id="score">0</span></div>
         <div class="hud-item hud-lives">Lives&nbsp;<span id="lives">1</span></div>
       </div>

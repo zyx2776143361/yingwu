@@ -58,9 +58,8 @@ const CONFIG = {
 
 /* =====================================================================
    2. 迷宫数据
-   已去掉最外圈一圈墙：由森林边框图（beijing.png）充当游戏边界，
-   迷宫外格子（r<0/r>=ROWS/c<0/c>=COLS）一律视为墙，撞上去 = 游戏结束。
-   起点 S(0,0) → 出口 E(12,18)，8 个水果全部可达（BFS 已校验）。
+   外圈墙与迷宫外区域均为边界，撞墙即结束。
+   起点 S(1,1) → 出口 E(13,20)，8 个水果位于可行走格子。
    ===================================================================== */
 const MAZE_MAP = [
   "######################",
@@ -101,13 +100,15 @@ const EXIT_POS = [13, 20]; // 出口格子（行, 列）：右下角紧贴右墙
    3. 画布 / 网格常量
    ===================================================================== */
 const COLS = MAZE_MAP[0].length; // 22
-const ROWS = MAZE_MAP.length;    // 16
+const ROWS = MAZE_MAP.length;    // 15
 const CELL = 40;                 // 每格像素（canvas 880 x 600 = 22x15 格）
 
 const GRID = MAZE_MAP.map((row) => row.split("")); // 字符网格，用于碰撞检测
 
 const gameCanvas = document.getElementById("gameCanvas");
 const ctx = gameCanvas.getContext("2d");
+gameCanvas.width = COLS * CELL;
+gameCanvas.height = ROWS * CELL;
 
 const CAM_W = 320, CAM_H = 240;
 const cameraCanvas = document.getElementById("cameraCanvas");
@@ -197,6 +198,39 @@ const hand = {
 let vision = null;          // FilesetResolver 返回的命名空间
 let gestureRecognizer = null;
 let faceLandmarker = null;
+let lastVideoTime = -1;
+let lastTrackingAt = 0;
+
+/** 清除过期的控制输入，避免丢失识别后继续移动。 */
+function stopControl() {
+  state.controlActive = false;
+  state.handUpdated = false;
+  hand.baselined = false;
+  hand.tvx = hand.tvy = hand.dxRaw = hand.dyRaw = 0;
+  bird.vx = bird.vy = 0;
+}
+
+function clearTracking() {
+  stopControl();
+  state.handSeen = state.isFist = state.faceSeen = false;
+  state.handLandmarks = state.faceLandmarks = null;
+  state.gestureLabel = "NONE";
+  state.gestureConf = 0;
+  state.mouthState = "closed";
+  state.mouthWasOpened = false;
+  state.mouthLabel = "--";
+  state.mar = 0;
+}
+
+function releaseCamera() {
+  state.cameraOk = false;
+  const stream = video.srcObject;
+  video.srcObject = null;
+  if (stream) stream.getTracks().forEach((track) => track.stop());
+  state.camStatus = "Stopped";
+  setCamDot("dot-gray");
+  clearTracking();
+}
 
 /* 音效 */
 let audioCtx = null;
@@ -296,21 +330,34 @@ function playSynth(name) {
 async function initializeCamera() {
   if (state.cameraOk) return true;
   try {
+    if (!navigator.mediaDevices?.getUserMedia) {
+      throw new Error("浏览器无法访问摄像头，请使用 localhost 或 HTTPS 地址打开页面");
+    }
     const stream = await navigator.mediaDevices.getUserMedia({
       video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: "user" },
       audio: false,
     });
     video.srcObject = stream;
     video.muted = true;
-    await new Promise((res) => {
-      if (video.readyState >= 1) return res();
-      video.onloadedmetadata = res;
-    });
-    await video.play().catch(() => {});
+    await video.play();
+    lastVideoTime = -1;
+    lastTrackingAt = performance.now();
+    for (const track of stream.getVideoTracks()) {
+      track.addEventListener("ended", () => {
+        releaseCamera();
+        state.mode = "ERROR";
+        state.waitingForPlayer = false;
+        hideAllOverlays();
+        permissionScreen.querySelector("h2").textContent = "摄像头已断开";
+        permissionScreen.querySelector(".sub").textContent = "请重新连接摄像头并重新加载页面。";
+        showOverlay(permissionScreen);
+      }, { once: true });
+    }
     state.cameraOk = true;
     state.camStatus = "Active";
     return true;
   } catch (err) {
+    releaseCamera();
     console.error("摄像头初始化失败:", err);
     state.cameraOk = false;
     if (err.name === "NotFoundError" || err.name === "DevicesNotFoundError") {
@@ -324,7 +371,7 @@ async function initializeCamera() {
     } else {
       state.camStatus = "Error";
       permissionScreen.querySelector(".sub").innerHTML =
-        "摄像头启动失败：" + err.name +
+        "摄像头启动失败：" + escapeHtml(describeError(err)) +
         "<br>提示：必须通过 Live Server（localhost）打开页面，直接双击 HTML 文件时浏览器会禁用摄像头。";
     }
     return false;
@@ -344,7 +391,7 @@ function waitForMediaPipe(timeoutMs = 15000) {
         return reject(new Error("MediaPipe 运行库加载失败：" + window.__mpError));
       }
       if (Date.now() - t0 > timeoutMs) {
-        return reject(new Error("MediaPipe 运行库加载超时（请确认 assets/lib/ 文件完整，或联网后重试）"));
+        return reject(new Error("MediaPipe 运行库加载超时，请检查网络后重试"));
       }
       setTimeout(poll, 100);
     })();
@@ -353,11 +400,12 @@ function waitForMediaPipe(timeoutMs = 15000) {
 
 async function initializeAI() {
   if (state.aiReady) return;
+  state.aiError = "";
   try {
     const mp = await waitForMediaPipe();
 
     loadingDetail.textContent = "加载 MediaPipe WASM 运行库…";
-    // 三级回退：本地 → npmmirror 国内镜像 → jsdelivr
+    // 按配置顺序尝试三个 CDN 来源。
     const wasmSources = [CONFIG.MEDIAPIPE_WASM_URL, CONFIG.MEDIAPIPE_WASM_NPM, CONFIG.MEDIAPIPE_WASM_FALLBACK];
     let wasmOk = false;
     for (const base of wasmSources) {
@@ -369,7 +417,7 @@ async function initializeAI() {
         console.warn("WASM 运行库加载失败，换下一个来源:", base, eWasm);
       }
     }
-    if (!wasmOk) throw new Error("WASM 运行库三个来源（本地/npmmirror/jsdelivr）都加载失败");
+    if (!wasmOk) throw new Error("WASM 运行库三个 CDN 来源都加载失败");
 
     loadingDetail.textContent = "加载手势识别模型 gesture_recognizer.task…";
     await ensureModelFile(CONFIG.GESTURE_MODEL);
@@ -381,7 +429,6 @@ async function initializeAI() {
     }
 
     loadingDetail.textContent = "加载人脸关键点模型 face_landmarker.task…";
-    await ensureModelFile(CONFIG.FACE_MODEL);
     try {
       faceLandmarker = await createFaceLandmarker(mp);
     } catch (e) {
@@ -392,6 +439,10 @@ async function initializeAI() {
     state.aiReady = true;
     console.log("AI 模型加载完成 ✅（手势识别 + 人脸关键点）");
   } catch (err) {
+    gestureRecognizer?.close();
+    faceLandmarker?.close();
+    gestureRecognizer = faceLandmarker = null;
+    state.aiReady = false;
     console.error("AI 模型加载失败:", err);
     state.aiError = String(err.message || err);
     throw err;
@@ -413,7 +464,7 @@ function describeError(e) {
 /** 预先确认模型文件能被 HTTP 访问，把模糊的 fetch 错误变成明确的 404/500 */
 async function ensureModelFile(path) {
   try {
-    const r = await fetch(path, { method: "GET" });
+    const r = await fetch(path, { method: "HEAD", signal: AbortSignal.timeout(15000) });
     if (!r.ok) throw new Error("HTTP " + r.status);
   } catch (e) {
     throw new Error("文件 " + path + " 无法访问（" + describeError(e) + "）");
@@ -445,16 +496,15 @@ async function createFaceLandmarker(mp) {
     runningMode: "VIDEO",
     numFaces: 1,
   });
-  if (CONFIG.USE_CPU_ONLY) {
-    return await mp.FaceLandmarker.createFromOptions(vision, opts(CONFIG.FACE_MODEL, "CPU"));
+  for (const delegate of CONFIG.USE_CPU_ONLY ? ["CPU"] : ["GPU", "CPU"]) {
+    try {
+      return await mp.FaceLandmarker.createFromOptions(vision, opts(CONFIG.FACE_MODEL, delegate));
+    } catch (e) {
+      console.warn("本地人脸模型加载失败:", delegate, describeError(e));
+    }
   }
-  try {
-    return await mp.FaceLandmarker.createFromOptions(vision, opts(CONFIG.FACE_MODEL, "GPU"));
-  } catch (e) {
-    console.warn("本地人脸模型加载失败，尝试 CDN 兜底:", describeError(e));
-    return await mp.FaceLandmarker.createFromOptions(
-      vision, opts(CONFIG.FACE_MODEL_FALLBACK, "CPU"));
-  }
+  return await mp.FaceLandmarker.createFromOptions(
+    vision, opts(CONFIG.FACE_MODEL_FALLBACK, "CPU"));
 }
 
 /* =====================================================================
@@ -537,6 +587,7 @@ function processMouthState() {
     state.mouthLabel = "NO FACE";
     state.mouthState = "closed";
     state.mouthWasOpened = false;
+    state.mar = 0;
     return;
   }
   const mar = mouthAspectRatio(state.faceLandmarks);
@@ -573,10 +624,7 @@ function applyDeadZone(v, zone) {
 function updateHandMotion() {
   if (!state.handSeen || !state.isFist) {
     // 没有手 / 没有握拳 → 不产生移动，并且下次握拳时重新建立基准
-    state.controlActive = false;
-    hand.baselined = false;
-    hand.tvx = 0;
-    hand.tvy = 0;
+    stopControl();
     return;
   }
 
@@ -628,8 +676,9 @@ function updateBirdMovement(dt) {
 
   if (state.controlActive) {
     // 有目标速度 → 向目标速度平滑靠拢（每个渲染帧都执行，直到下一次识别刷新）
-    bird.vx += (hand.tvx - bird.vx) * CONFIG.VELOCITY_SMOOTHING;
-    bird.vy += (hand.tvy - bird.vy) * CONFIG.VELOCITY_SMOOTHING;
+    const smoothing = 1 - Math.pow(1 - CONFIG.VELOCITY_SMOOTHING, dt * 60);
+    bird.vx += (hand.tvx - bird.vx) * smoothing;
+    bird.vy += (hand.tvy - bird.vy) * smoothing;
   } else {
     // 未激活控制 → 速度快速衰减到 0
     const k = Math.pow(0.02, dt); // 极快衰减
@@ -657,14 +706,17 @@ function updateBirdMovement(dt) {
   bird.y = clamp(bird.y, 20, ROWS * CELL - 20);
 }
 
-/** 圆形碰撞：检查 (x, y) 处小鸟的包围盒是否压到墙格 */
+/** 圆与墙格矩形的最近点检测，避免包围盒在墙角误判。 */
 function checkWallCollision(x, y) {
   const r = CONFIG.BIRD_RADIUS;
   const c0 = Math.floor((x - r) / CELL), c1 = Math.floor((x + r) / CELL);
   const r0 = Math.floor((y - r) / CELL), r1 = Math.floor((y + r) / CELL);
   for (let rr = r0; rr <= r1; rr++) {
     for (let cc = c0; cc <= c1; cc++) {
-      if (isWall(rr, cc)) return true;
+      if (!isWall(rr, cc)) continue;
+      const nearX = clamp(x, cc * CELL, (cc + 1) * CELL);
+      const nearY = clamp(y, rr * CELL, (rr + 1) * CELL);
+      if ((x - nearX) ** 2 + (y - nearY) ** 2 <= r * r) return true;
     }
   }
   return false;
@@ -720,6 +772,7 @@ function updateFruits(dt) {
    13. 游戏流程：开始 / 结束 / 胜利 / 重置
    ===================================================================== */
 function resetGame() {
+  clearTracking();
   // 小鸟回到起点格 (1,1) 的中心
   bird.x = 1 * CELL + CELL / 2;
   bird.y = 1 * CELL + CELL / 2;
@@ -728,6 +781,7 @@ function resetGame() {
 
   state.score = 0;
   state.lives = 1;
+  $("lives").textContent = state.lives;
   state.birdDead = false;
   state.chewTimer = 0;
   state.shakeTime = 0;
@@ -751,6 +805,9 @@ function resetGame() {
 function gameOver() {
   if (state.mode !== "PLAYING") return;
   state.mode = "GAME_OVER";
+  stopControl();
+  state.lives = 0;
+  $("lives").textContent = state.lives;
   state.birdDead = true;
   playSound("hit");
   spawnParticles(bird.x, bird.y, 26, ["#ff6b6b", "#ffd93d", "#ffffff", "#ff8a5c"]);
@@ -763,6 +820,7 @@ function gameOver() {
 function winGame() {
   if (state.mode !== "PLAYING") return;
   state.mode = "WIN";
+  stopControl();
   playSound("win");
   const ex = EXIT_POS[1] * CELL + CELL / 2;
   const ey = EXIT_POS[0] * CELL + CELL / 2;
@@ -787,8 +845,11 @@ function beginGame() {
 
 /** Start Game 点击后的完整流程 */
 async function startFlow() {
+  if (state.mode !== "MENU") return;
+  state.mode = "LOADING";
   initAudio();
   playSound("start");
+  hideAllOverlays();
   showOverlay(loadingScreen);
   loadingTitle.textContent = "正在请求摄像头权限…";
   loadingDetail.textContent = "请在浏览器弹窗中点击「允许」";
@@ -796,17 +857,20 @@ async function startFlow() {
   // 1. 摄像头权限
   const camOk = await initializeCamera();
   if (!camOk) {
+    state.mode = "ERROR";
     hideAllOverlays();
     showOverlay(permissionScreen);
     return;
   }
-  setCamDot("green");
+  setCamDot("dot-green");
 
   // 2. AI 模型
   loadingTitle.textContent = "正在加载 AI 模型…";
   try {
     await initializeAI();
   } catch (e) {
+    releaseCamera();
+    state.mode = "ERROR";
     hideAllOverlays();
     showOverlay(permissionScreen);
     permissionScreen.querySelector("h2").textContent = "Setup Failed";
@@ -1215,9 +1279,14 @@ let fpsFrames = 0, fpsTime = 0, fps = 0;
 
 function gameLoop(ts) {
   requestAnimationFrame(gameLoop);
+  if (document.hidden) {
+    lastTs = 0;
+    return;
+  }
 
   const dt = lastTs ? Math.min(0.05, (ts - lastTs) / 1000) : 0.016;
   lastTs = ts;
+  if (state.cameraOk && ts - lastTrackingAt > 300) clearTracking();
 
   // FPS 统计
   fpsFrames++; fpsTime += dt;
@@ -1239,8 +1308,10 @@ function gameLoop(ts) {
   // 游戏逻辑
   if (state.mode === "PLAYING") {
     updateBirdMovement(dt);
-    updateFruits(dt);
-    checkWin();
+    if (state.mode === "PLAYING") {
+      updateFruits(dt);
+      checkWin();
+    }
   }
   updateEffects(dt);
 
@@ -1253,6 +1324,8 @@ function gameLoop(ts) {
 /** 执行一次手势 + 人脸识别 */
 function runTracking() {
   if (!state.cameraOk || !state.aiReady || video.readyState < 2) return;
+  if (video.currentTime === lastVideoTime) return;
+  lastVideoTime = video.currentTime;
   try {
     const now = performance.now();
     const gRes = gestureRecognizer.recognizeForVideo(video, now);
@@ -1262,7 +1335,9 @@ function runTracking() {
     state.faceSeen = fRes.faceLandmarks && fRes.faceLandmarks.length > 0;
     state.faceLandmarks = state.faceSeen ? fRes.faceLandmarks[0] : null;
     processMouthState();
+    lastTrackingAt = now;
   } catch (e) {
+    clearTracking();
     // 偶发识别异常不影响主循环
     console.warn("识别失败:", e);
   }
@@ -1327,7 +1402,16 @@ $("winRetryBtn").addEventListener("click", beginGame);
 // 点击摄像头面板：显示/隐藏
 $("toggleCameraBtn").addEventListener("click", () => {
   cameraPanel.classList.toggle("hidden");
+  $("toggleCameraBtn").setAttribute("aria-expanded", String(!cameraPanel.classList.contains("hidden")));
 });
+
+document.addEventListener("visibilitychange", () => {
+  clearTracking();
+  lastTs = 0;
+  trackAcc = 0;
+  lastVideoTime = -1;
+});
+window.addEventListener("pagehide", releaseCamera);
 
 /* =====================================================================
    19. 启动
